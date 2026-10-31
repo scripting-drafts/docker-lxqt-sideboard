@@ -34,8 +34,9 @@ It is not a guarantee that all confidential information has been identified.
 - No live secret, encoded secret, 16-byte secret fragment, private-key block,
   personal path, private Funnel hostname, VPN endpoint, or fixture address was
   found. Earlier generic-word and `0.0.0.0` matches were false positives.
-- A cached historical commit still exposes the prior public author name. It is
-  absent from the current tree but GitHub has not yet purged old objects.
+- The prior public repository was deleted and replaced with a clean repository.
+  Checked old commit SHAs return 404. Hosting-provider internal backup retention
+  is outside this project's control.
 
 ## Limitations
 
@@ -44,7 +45,6 @@ every secret, transformed value, personal detail, or confidential algorithm.
 No external secret-scanning product or independent human review was performed.
 Review all files and history before publishing; use fresh credentials if deploying.
 
-The public repository history was replaced with one sanitized root commit to
-remove prior personal author metadata and superseded fixtures. Git hosting can
-retain unreachable objects in caches until garbage collection; no secret value
-was found in the removed history.
+The public repository was recreated with sanitized history and generic authorship.
+Hosting providers may retain internal backups or caches beyond repository deletion;
+no live secret value was found in any removed history.
