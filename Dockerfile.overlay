@@ -1,0 +1,13 @@
+# Code-only update from a verified local OCI image context, without registry DNS.
+# Supply --build-context desktop-base=oci-layout:///absolute/layout@sha256:DIGEST.
+# Preserves the base's packages, user, environment, and filesystem ownership.
+FROM desktop-base
+
+COPY --chmod=0755 start-desktop.sh /usr/local/bin/start-desktop
+COPY --chmod=0755 scripts/check-vnc.py /usr/local/bin/check-vnc
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
+  CMD curl --fail --silent --show-error --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && \
+      /usr/local/bin/check-vnc --timeout 2 || exit 1
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start-desktop"]

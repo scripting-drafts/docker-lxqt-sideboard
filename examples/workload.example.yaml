@@ -1,0 +1,385 @@
+# EXAMPLE ONLY. Run scripts/render.py after configuration for the real manifest.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lxqt-secure
+  labels:
+    app.kubernetes.io/part-of: lxqt-kind-secure
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: lxqt-secure-home-pv
+  labels:
+    app.kubernetes.io/part-of: lxqt-kind-secure
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ''
+  volumeMode: Filesystem
+  hostPath:
+    path: /var/local/lxqt-data/home
+    type: Directory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - lxqt-secure-control-plane
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: desktop-home
+  namespace: lxqt-secure
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: ''
+  volumeName: lxqt-secure-home-pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: lxqt-secure-tailscale-pv
+  labels:
+    app.kubernetes.io/part-of: lxqt-kind-secure
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ''
+  volumeMode: Filesystem
+  hostPath:
+    path: /var/local/lxqt-data/tailscale
+    type: Directory
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: kubernetes.io/hostname
+          operator: In
+          values:
+          - lxqt-secure-control-plane
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tailscale-state
+  namespace: lxqt-secure
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: ''
+  volumeName: lxqt-secure-tailscale-pv
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lxqt-desktop
+  namespace: lxqt-secure
+  labels:
+    app: lxqt-desktop
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  # Permit cold VPN + desktop startup to finish before declaring a stalled rollout.
+  progressDeadlineSeconds: 1200
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lxqt-desktop
+  template:
+    metadata:
+      labels:
+        app: lxqt-desktop
+    spec:
+      automountServiceAccountToken: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      nodeSelector:
+        kubernetes.io/hostname: lxqt-secure-control-plane
+      dnsPolicy: None
+      dnsConfig:
+        nameservers:
+        - 127.0.0.1
+        searches: []
+        options:
+        - name: ndots
+          value: '1'
+        - name: timeout
+          value: '2'
+        - name: attempts
+          value: '2'
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+      - name: gluetun
+        image: qmcgaw/gluetun:v3.40.0
+        imagePullPolicy: IfNotPresent
+        restartPolicy: Always
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+            add:
+            - NET_ADMIN
+          seccompProfile:
+            type: RuntimeDefault
+        env:
+        - name: VPN_SERVICE_PROVIDER
+          value: protonvpn
+        - name: VPN_TYPE
+          value: wireguard
+        - name: FREE_ONLY
+          value: 'on'
+        - name: VPN_PORT_FORWARDING
+          value: 'off'
+        - name: WIREGUARD_PRIVATE_KEY_SECRETFILE
+          value: /run/secrets/wireguard_private_key
+        - name: DNS_KEEP_NAMESERVER
+          value: 'off'
+        - name: DNS_SERVER
+          value: 'on'
+        - name: PUID
+          value: '0'
+        - name: PGID
+          value: '0'
+        - name: PUBLICIP_FILE
+          value: /tmp/gluetun-ip
+        volumeMounts:
+        - name: tun
+          mountPath: /dev/net/tun
+          readOnly: false
+        - name: wg-secret
+          mountPath: /run/secrets
+          readOnly: true
+        - name: gluetun-data
+          mountPath: /gluetun
+          readOnly: false
+        startupProbe:
+          exec:
+            command:
+            - /gluetun-entrypoint
+            - healthcheck
+          periodSeconds: 5
+          failureThreshold: 90
+          timeoutSeconds: 4
+        readinessProbe:
+          exec:
+            command:
+            - /gluetun-entrypoint
+            - healthcheck
+          periodSeconds: 15
+          failureThreshold: 2
+          timeoutSeconds: 4
+      containers:
+      - name: desktop
+        image: lxqt-desktop:kind-v6.3.7-vnc1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: &id001
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          seccompProfile: &id002
+            type: RuntimeDefault
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+        - name: DISPLAY
+          value: :99
+        - name: RESOLUTION
+          value: 1920x1080x24
+        - name: MULTIPTR
+          value: '1'
+        volumeMounts:
+        - name: desktop-home
+          mountPath: /home/desktop
+          readOnly: false
+        - name: vnc-secret
+          mountPath: /run/secrets
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+        - name: run
+          mountPath: /run
+          readOnly: false
+        - name: shm
+          mountPath: /dev/shm
+          readOnly: false
+        startupProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && /usr/local/bin/check-vnc --timeout 2
+          periodSeconds: 5
+          failureThreshold: 60
+          timeoutSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && /usr/local/bin/check-vnc --timeout 2
+          periodSeconds: 15
+          timeoutSeconds: 5
+        resources:
+          requests:
+            memory: 512Mi
+            cpu: 250m
+          limits:
+            memory: 3Gi
+      - name: caddy
+        image: caddy:2
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: *id001
+          readOnlyRootFilesystem: true
+          seccompProfile: *id002
+          runAsUser: 1000
+          runAsGroup: 1000
+        command:
+        - caddy
+        - run
+        - --config
+        - /etc/caddy/Caddyfile
+        - --adapter
+        - caddyfile
+        env:
+        - name: XDG_DATA_HOME
+          value: /tmp/caddy-data
+        - name: XDG_CONFIG_HOME
+          value: /tmp/caddy-config
+        volumeMounts:
+        - name: caddy-secret
+          mountPath: /etc/caddy
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 50m
+          limits:
+            memory: 256Mi
+      - name: tailscale
+        image: tailscale/tailscale:stable
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: *id001
+          readOnlyRootFilesystem: false
+          seccompProfile: *id002
+          runAsUser: 0
+        env:
+        - name: TS_AUTHKEY
+          value: file:/run/secrets/tailscale_authkey
+        - name: TS_AUTH_ONCE
+          value: 'true'
+        - name: TS_USERSPACE
+          value: 'true'
+        - name: TS_KUBE_SECRET
+          value: ''
+        - name: TS_STATE_DIR
+          value: /var/lib/tailscale
+        - name: TS_HOSTNAME
+          value: example-browser
+        - name: TS_ACCEPT_DNS
+          value: 'false'
+        volumeMounts:
+        - name: tailscale-secret
+          mountPath: /run/secrets
+          readOnly: true
+        - name: tailscale-state
+          mountPath: /var/lib/tailscale
+          readOnly: false
+        - name: ts-run
+          mountPath: /var/run/tailscale
+          readOnly: false
+        resources:
+          requests:
+            memory: 64Mi
+            cpu: 50m
+          limits:
+            memory: 512Mi
+      volumes:
+      - name: tun
+        hostPath:
+          path: /dev/net/tun
+          type: CharDevice
+      - name: wg-secret
+        secret:
+          secretName: lxqt-runtime-secrets
+          defaultMode: 292
+          items:
+          - key: wireguard_private_key
+            path: wireguard_private_key
+      - name: vnc-secret
+        secret:
+          secretName: lxqt-runtime-secrets
+          defaultMode: 292
+          items:
+          - key: vnc_password
+            path: vnc_password
+      - name: tailscale-secret
+        secret:
+          secretName: lxqt-runtime-secrets
+          defaultMode: 292
+          items:
+          - key: tailscale_authkey
+            path: tailscale_authkey
+      - name: caddy-secret
+        secret:
+          secretName: lxqt-runtime-secrets
+          defaultMode: 292
+          items:
+          - key: Caddyfile
+            path: Caddyfile
+      - name: desktop-home
+        persistentVolumeClaim:
+          claimName: desktop-home
+      - name: tailscale-state
+        persistentVolumeClaim:
+          claimName: tailscale-state
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 512Mi
+      - name: run
+        emptyDir:
+          medium: Memory
+          sizeLimit: 32Mi
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Gi
+      - name: ts-run
+        emptyDir: {}
+      - name: gluetun-data
+        emptyDir: {}

@@ -1,0 +1,19 @@
+{
+  "cluster": "lxqt-secure",
+  "namespace": "lxqt-secure",
+  "host_data_dir": "/var/lib/lxqt-kind-secure",
+  "host_cpu_set": "0,1,3-7,9-11",
+  "vpn_recovery_timeout_seconds": 45,
+  "resolution": "1920x1080x24",
+  "multi_pointer": true,
+  "tailscale_hostname": "example-browser",
+  "proton_free_only": true,
+  "proton_server_countries": "",
+  "desktop_image": "lxqt-desktop:kind-v6.3.7-vnc1",
+  "gluetun_image": "qmcgaw/gluetun:v3.40.0",
+  "caddy_image": "caddy:2",
+  "tailscale_image": "tailscale/tailscale:stable",
+  "desktop_storage_gib": 20,
+  "tailscale_storage_gib": 1,
+  "viewer_username": "viewer"
+}

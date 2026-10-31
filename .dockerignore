@@ -1,0 +1,9 @@
+.git
+config/
+generated/
+tests/
+scripts/*
+!scripts/check-vnc.py
+*.zip
+*.tar.gz
+README.md

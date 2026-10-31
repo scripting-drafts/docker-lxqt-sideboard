@@ -1,0 +1,9 @@
+config/settings.json
+config/secrets/
+config/kubeconfig
+config/Caddyfile
+config/proton-source.json
+config/LOCKED_DOWN
+generated/
+*.log
+__pycache__/
