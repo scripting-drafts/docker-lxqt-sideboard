@@ -25,6 +25,18 @@ It is not a guarantee that all confidential information has been identified.
   Instead, the backup tool now creates checksum-pinned timeline entries and
   `latest/` symlinks for each new archive when a drive is configured.
 
+## Final history audit
+
+- Re-cloned both public repositories as mirrors and inspected every reachable
+  blob plus explicitly fetched cached historical commits.
+- Public source: 1 reachable commit, 55 files; four cached commits and 62 blobs
+  checked, totaling 218,005 bytes.
+- No live secret, encoded secret, 16-byte secret fragment, private-key block,
+  personal path, private Funnel hostname, VPN endpoint, or fixture address was
+  found. Earlier generic-word and `0.0.0.0` matches were false positives.
+- A cached historical commit still exposes the prior public author name. It is
+  absent from the current tree but GitHub has not yet purged old objects.
+
 ## Limitations
 
 Pattern matching, known-value comparisons, and entropy analysis cannot identify
