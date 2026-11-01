@@ -1,4 +1,5 @@
 """Minimal unit checks for the WireGuard inventory/load library."""
+import dataclasses
 import importlib.util
 import pathlib
 import sys
@@ -44,6 +45,32 @@ class WireGuardLibraryTests(unittest.TestCase):
         self.assertEqual(measured.latency_ms, 12.0)
         self.assertEqual(measured.packet_loss, 0.0)
         self.assertEqual(measured.score, 12.0)
+
+    def test_inventory_and_load_caches_expire_and_invalidate(self):
+        now = [0.0]
+        calls = []
+        active = library.WireGuardInterface('wg-a', 'wg-a', True, 'public')
+        with patch.object(library, 'discover', side_effect=lambda: calls.append('discover') or [active]):
+            manager = library.WireGuardLibrary(cache_ttl=30, load_ttl=15, clock=lambda: now[0])
+            manager.refresh()
+            manager.refresh()
+            self.assertEqual(calls, ['discover'])
+            now[0] = 31
+            manager.refresh()
+            self.assertEqual(calls, ['discover', 'discover'])
+            manager.invalidate()
+            manager.refresh()
+            self.assertEqual(calls, ['discover', 'discover', 'discover'])
+
+        probes = []
+        with patch.object(library, 'measure', side_effect=lambda item, probe: probes.append(item.name) or dataclasses.replace(item, latency_ms=1, packet_loss=0)):
+            manager = library.WireGuardLibrary(cache_ttl=30, load_ttl=15, clock=lambda: now[0])
+            manager.measure(active)
+            manager.measure(active)
+            self.assertEqual(probes, ['wg-a'])
+            now[0] += 16
+            manager.measure(active)
+            self.assertEqual(probes, ['wg-a', 'wg-a'])
 
     def test_discovery_filters_and_derives_public_keys(self):
         rows = [['wg-a', 'wireguard'], ['eth0', '802-3-ethernet'], ['wg-b', 'wireguard']]

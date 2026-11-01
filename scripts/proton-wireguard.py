@@ -24,8 +24,7 @@ import tempfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from wireguard_library import (  # noqa: E402
     WireGuardInterface,
-    discover,
-    measure,
+    WireGuardLibrary,
     nmcli_rows,
     wireguard_public_key,
 )
@@ -35,6 +34,7 @@ SECRETS = ROOT / 'config' / 'secrets'
 SOURCE = ROOT / 'config' / 'proton-source.json'
 NAME_RE = re.compile(r'[A-Za-z0-9_.-]{1,15}\Z')
 KEY_RE = re.compile(r'[A-Za-z0-9+/]{43}=\Z')
+_LIBRARY = WireGuardLibrary()
 
 
 def parse_config(path: pathlib.Path) -> dict:
@@ -132,7 +132,10 @@ def pod_public_key() -> str:
 
 
 def list_wireguard_profiles() -> list[dict]:
-    return [interface.as_dict(include_key=True) for interface in discover()]
+    return [
+        interface.as_dict(include_key=True)
+        for interface in _LIBRARY.refresh()
+    ]
 
 
 def _interface(profile: dict) -> WireGuardInterface:
@@ -150,6 +153,7 @@ def probe_profile_load(name: str) -> WireGuardInterface | None:
     try:
         activate_profile(name)
         activated = True
+        _LIBRARY.invalidate()
         profile = next(
             (item for item in list_wireguard_profiles()
              if item['name'] == name and item['active']),
@@ -157,13 +161,15 @@ def probe_profile_load(name: str) -> WireGuardInterface | None:
         )
         if profile is None:
             return None
-        return measure(_interface(profile))
+        return _LIBRARY.measure(_interface(profile), force=True)
     finally:
+        _LIBRARY.invalidate()
         if activated:
             try:
                 disconnect_profile(name)
             except RuntimeError:
                 pass
+        _LIBRARY.invalidate()
 
 
 def disconnect_profile(name: str) -> None:
@@ -197,6 +203,7 @@ def _active_conflicts(profiles: list[dict], pod_key: str) -> tuple[list[dict], l
 
 
 def check_host_conflict(repair: bool = True) -> int:
+    _LIBRARY.invalidate()
     try:
         pod_key = pod_public_key()
     except RuntimeError as err:
@@ -239,6 +246,7 @@ def check_host_conflict(repair: bool = True) -> int:
         except RuntimeError as err:
             print(f'BLOCKED: {err}', file=sys.stderr)
             return 3
+    _LIBRARY.invalidate()
     try:
         profiles = list_wireguard_profiles()
     except RuntimeError as err:
@@ -291,6 +299,7 @@ def check_host_conflict(repair: bool = True) -> int:
         except RuntimeError as err:
             print(f'FAILOVER: {err}; trying the next profile.')
             continue
+        _LIBRARY.invalidate()
         try:
             refreshed = list_wireguard_profiles()
         except RuntimeError as err:

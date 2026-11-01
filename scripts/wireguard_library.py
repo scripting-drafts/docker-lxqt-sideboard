@@ -16,11 +16,14 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 KEY_RE = re.compile(r'[A-Za-z0-9+/]{43}=\Z')
 LOSS_RE = re.compile(r'([0-9.]+)% packet loss')
 RTT_RE = re.compile(r'rtt[^=]*=\s*[0-9.]+/([0-9.]+)/')
 DEFAULT_PROBE = '1.1.1.1'
+DEFAULT_CACHE_TTL = 30.0
+DEFAULT_LOAD_TTL = 15.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -182,27 +185,87 @@ def ranked(interfaces: list[WireGuardInterface]) -> list[WireGuardInterface]:
     return sorted(interfaces, key=key)
 
 
+class WireGuardLibrary:
+    """Inventory cache with event invalidation and short-lived load probes.
+
+    Inventory is refreshed at most every cache_ttl seconds; load probes are
+    cached per active interface for load_ttl seconds. Call invalidate() after
+    any nmcli state change so the next read is authoritative.
+    """
+
+    def __init__(self, probe: str = DEFAULT_PROBE,
+                 cache_ttl: float = DEFAULT_CACHE_TTL,
+                 load_ttl: float = DEFAULT_LOAD_TTL,
+                 clock=time.monotonic):
+        self.probe = probe
+        self.cache_ttl = cache_ttl
+        self.load_ttl = load_ttl
+        self.clock = clock
+        self._cache: list[WireGuardInterface] | None = None
+        self._cache_at = 0.0
+        self._loads: dict[tuple[str, str], tuple[float, WireGuardInterface]] = {}
+
+    def invalidate(self) -> None:
+        self._cache = None
+        self._loads.clear()
+
+    def refresh(self, *, force: bool = False) -> list[WireGuardInterface]:
+        now = self.clock()
+        if not force and self._cache is not None and now - self._cache_at < self.cache_ttl:
+            return list(self._cache)
+        interfaces = discover()
+        self._cache = interfaces
+        self._cache_at = now
+        valid = {(item.name, item.device) for item in interfaces if item.active}
+        self._loads = {key: value for key, value in self._loads.items() if key in valid}
+        return list(interfaces)
+
+    def measure(self, interface: WireGuardInterface, *, force: bool = False) -> WireGuardInterface:
+        if not interface.active or not interface.device:
+            return dataclasses.replace(interface, error='not active')
+        key = (interface.name, interface.device)
+        now = self.clock()
+        cached = self._loads.get(key)
+        if not force and cached is not None and now - cached[0] < self.load_ttl:
+            return cached[1]
+        result = measure(interface, self.probe)
+        self._loads[key] = (now, result)
+        return result
+
+    def list(self, *, probe_active: bool = True, force: bool = False) -> list[WireGuardInterface]:
+        interfaces = self.refresh(force=force)
+        if probe_active:
+            interfaces = [
+                self.measure(item, force=force) if item.active else item
+                for item in interfaces
+            ]
+        return ranked(interfaces)
+
+    def best(self, *, probe_active: bool = True, force: bool = False) -> WireGuardInterface | None:
+        items = self.list(probe_active=probe_active, force=force)
+        return items[0] if items else None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='WireGuard interface library')
     sub = parser.add_subparsers(dest='command', required=True)
     listing = sub.add_parser('list', help='list profiles and probe active interfaces')
     listing.add_argument('--probe', default=DEFAULT_PROBE)
     listing.add_argument('--json', action='store_true')
+    listing.add_argument('--refresh', action='store_true', help='bypass the inventory cache')
+    listing.add_argument('--no-probe', action='store_true', help='skip latency/loss probes')
     args = parser.parse_args()
+    library = WireGuardLibrary(probe=args.probe)
     try:
-        interfaces = discover()
+        interfaces = library.list(probe_active=not args.no_probe, force=args.refresh)
     except RuntimeError as err:
         print(f'wireguard-library: {err}', file=sys.stderr)
         return 2
-    measured = [
-        measure(interface, args.probe) if interface.active else interface
-        for interface in interfaces
-    ]
     if args.json:
-        print(json.dumps([item.as_dict() for item in ranked(measured)], indent=2))
+        print(json.dumps([item.as_dict() for item in interfaces], indent=2))
         return 0
     print(f'{"NAME":24} {"ACTIVE":6} {"DEVICE":16} {"LOSS":>6} {"LATENCY":>9} {"SCORE":>9}')
-    for item in ranked(measured):
+    for item in interfaces:
         loss = '-' if item.packet_loss is None else f'{item.packet_loss:.0f}%'
         latency = '-' if item.latency_ms is None else f'{item.latency_ms:.1f}ms'
         score = '-' if item.score is None else f'{item.score:.1f}'

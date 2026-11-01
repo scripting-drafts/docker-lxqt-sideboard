@@ -116,9 +116,18 @@ python3 scripts/wireguard_library.py list --json
 ```
 
 It lists NetworkManager WireGuard profiles, their active device, and a local
-load score for active interfaces. When several safe failover candidates exist,
-`check-host` activates each candidate, probes it, disconnects it, and activates
-the lowest-score candidate. With only one candidate it activates it directly.
+load score for active interfaces. The inventory cache lives for 30 seconds and
+active load results for 15 seconds; any activation or disconnection invalidates
+both. Use `--refresh` to bypass the inventory cache and `--no-probe` to skip
+latency checks, for example:
+
+```bash
+python3 scripts/wireguard_library.py list --refresh --json
+```
+
+When several safe failover candidates exist, `check-host` activates each
+candidate, probes it, disconnects it, and activates the lowest-score candidate.
+With only one candidate it activates it directly.
 
 The score is `average ICMP RTT + 10 × packet loss percent` through the tunnel to
 `1.1.1.1`. It is a **local path-health proxy**, not a Proton server-side load
