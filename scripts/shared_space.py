@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Image-only upload endpoint for the Shared User Space."""
+"""Shared User Space: uploads, storage repair, and Caddy route repair."""
 from __future__ import annotations
 
 import argparse
@@ -15,32 +15,46 @@ import secrets
 import stat
 import sys
 import tempfile
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
-ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp'}
+TEXT_EXTENSIONS = {'.txt'}
+ALLOWED_EXTENSIONS = IMAGE_EXTENSIONS | TEXT_EXTENSIONS
 MIME_TYPES = {
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.png': 'image/png',
     '.webp': 'image/webp',
+    '.txt': 'text/plain; charset=utf-8',
 }
-MAX_FILE_BYTES = 25 * 1024 * 1024
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+MAX_TEXT_BYTES = 1 * 1024 * 1024
 MAX_REQUEST_BYTES = 100 * 1024 * 1024
 MAX_FILES = 10
 NAME_RE = re.compile(
-    r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,119}\.(?:jpe?g|png|webp)$',
+    r'^[A-Za-z0-9][A-Za-z0-9 ._-]{0,119}\.(?:jpe?g|png|webp|txt)$',
     re.IGNORECASE,
 )
 CSP = (
     "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; "
     "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
 )
+README_TEXT = """Shared User Space
+
+Images: .jpg .jpeg .png .webp via the authenticated /shared/ web route.
+Text: .txt via the same route; lists are ordinary .txt files.
+Limits: 25 MiB per image, 1 MiB per text file, 10 files per upload.
+Edit a list in qterminal:
+  nano "$HOME/Shared User Space/lists.txt"
+This folder persists with the desktop home volume.
+"""
 
 
 def safe_filename(raw: str | None) -> str | None:
-    """Return a flat, image-named filename or None."""
+    """Return a flat, supported filename or None."""
     if not raw:
         return None
     name = raw.replace('\\', '/').rsplit('/', 1)[-1].strip()
@@ -62,6 +76,19 @@ def image_kind(data: bytes) -> str | None:
     return None
 
 
+def text_ok(data: bytes) -> bool:
+    """Accept bounded UTF-8 text without NUL or unexpected controls."""
+    if len(data) > MAX_TEXT_BYTES:
+        return False
+    try:
+        text = data.decode('utf-8')
+    except UnicodeDecodeError:
+        return False
+    if '\x00' in text:
+        return False
+    return all(ord(char) >= 32 or char in '\n\r\t' for char in text)
+
+
 def extension_matches(name: str, kind: str) -> bool:
     suffix = pathlib.PurePath(name).suffix.lower()
     if kind == '.jpg':
@@ -69,7 +96,18 @@ def extension_matches(name: str, kind: str) -> bool:
     return suffix == kind
 
 
-def store_image(root: pathlib.Path, name: str, data: bytes) -> pathlib.Path:
+def file_kind(name: str, data: bytes) -> str | None:
+    """Return the validated kind for a supported filename, or None."""
+    suffix = pathlib.PurePath(name).suffix.lower()
+    if suffix in IMAGE_EXTENSIONS:
+        kind = image_kind(data)
+        return kind if kind and extension_matches(name, kind) else None
+    if suffix in TEXT_EXTENSIONS:
+        return '.txt' if text_ok(data) else None
+    return None
+
+
+def store_file(root: pathlib.Path, name: str, data: bytes) -> pathlib.Path:
     """Atomically add a file without overwriting an existing name."""
     stem, suffix = os.path.splitext(name)
     fd, temporary = tempfile.mkstemp(prefix='.upload-', dir=root)
@@ -96,6 +134,35 @@ def store_image(root: pathlib.Path, name: str, data: bytes) -> pathlib.Path:
             pass
 
 
+def ensure_space(root: pathlib.Path) -> pathlib.Path:
+    """Create or repair the Shared User Space without following symlinks."""
+    root = pathlib.Path(root)
+    if root.is_symlink():
+        raise RuntimeError('Shared User Space must not be a symlink')
+    root.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o755)
+    lists = root / 'lists'
+    if lists.is_symlink():
+        lists.unlink()
+    elif lists.is_dir():
+        try:
+            lists.rmdir()  # only when empty; never delete stored lists
+        except OSError:
+            pass
+    readme = root / 'README.txt'
+    if not readme.exists() and not readme.is_symlink():
+        readme.write_text(README_TEXT, encoding='utf-8')
+        os.chmod(readme, 0o644)
+    cutoff = time.time() - 3600
+    for stale in root.glob('.upload-*'):
+        try:
+            if stale.is_file() and not stale.is_symlink() and stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            pass
+    return root
+
+
 def parse_multipart(content_type: str, body: bytes) -> tuple[str | None, list[tuple[str, bytes]]]:
     if not content_type.lower().startswith('multipart/form-data'):
         raise ValueError('expected multipart/form-data')
@@ -116,7 +183,7 @@ def parse_multipart(content_type: str, body: bytes) -> tuple[str | None, list[tu
             token = payload.decode('utf-8', 'replace')
         elif field in ('files', 'file'):
             filename = part.get_filename()
-            if filename and payload:
+            if filename and payload is not None:
                 files.append((filename, payload))
     return token, files
 
@@ -130,18 +197,31 @@ def render_page(root: pathlib.Path, token: str, message: str = '', status: int =
     for path in paths:
         if path.is_symlink() or not path.is_file():
             continue
-        if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+        suffix = path.suffix.lower()
+        if suffix not in ALLOWED_EXTENSIONS:
             continue
         name = path.name
         url = '/shared/files/' + quote(name, safe='')
-        items.append(
-            '<li><a href="{url}"><img src="{url}" alt="{label}" loading="lazy">'
-            '<span>{label}</span></a></li>'.format(
-                url=html.escape(url, quote=True),
-                label=html.escape(name),
+        label = html.escape(name)
+        if suffix == '.txt':
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            items.append(
+                '<li class="file"><a href="{url}"><span class="type">TXT</span>'
+                '<span>{label}</span><small>{size} B</small></a></li>'.format(
+                    url=html.escape(url, quote=True), label=label, size=size,
+                )
             )
-        )
-    gallery = '<ul class="gallery">' + ''.join(items) + '</ul>' if items else '<p class="empty">No images yet.</p>'
+        else:
+            items.append(
+                '<li><a href="{url}"><img src="{url}" alt="{label}" loading="lazy">'
+                '<span>{label}</span></a></li>'.format(
+                    url=html.escape(url, quote=True), label=label,
+                )
+            )
+    gallery = '<ul class="gallery">' + ''.join(items) + '</ul>' if items else '<p class="empty">No files yet.</p>'
     notice = f'<p class="notice">{html.escape(message)}</p>' if message else ''
     page = f"""<!doctype html>
 <html lang="en">
@@ -161,18 +241,21 @@ button {{ margin-top: .75rem; padding: .5rem 1rem; }}
 .gallery a {{ display: block; color: inherit; text-decoration: none; }}
 .gallery img {{ width: 100%; height: 10rem; object-fit: cover; border-radius: 6px; background: #f1f3f4; }}
 .gallery span {{ display: block; overflow-wrap: anywhere; margin-top: .35rem; }}
+.gallery .file {{ border: 1px solid #dadce0; border-radius: 6px; padding: .75rem; }}
+.gallery .type {{ font-size: .75rem; color: #5f6368; }}
+.gallery small {{ display: block; color: #5f6368; margin-top: .25rem; }}
 .empty {{ color: #5f6368; }}
 </style>
 </head>
 <body>
 <h1>Shared User Space</h1>
-<p class="hint">Images only: JPG, JPEG, PNG, WebP. Maximum 25 MiB per file, 10 files per upload.</p>
-<p class="hint">For text lists, open a terminal and run <code>nano "$HOME/Shared User Space/lists.txt"</code>.</p>
+<p class="hint">Images: JPG, JPEG, PNG, WebP (25 MiB each). Text: TXT (1 MiB each). Up to 10 files per upload.</p>
+<p class="hint">For lists, open a terminal and run <code>nano "$HOME/Shared User Space/lists.txt"</code>.</p>
 {notice}
 <form method="post" action="/shared/upload" enctype="multipart/form-data">
 <input type="hidden" name="csrf" value="{token}">
-<input type="file" name="files" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple required>
-<button type="submit">Add images</button>
+<input type="file" name="files" accept=".jpg,.jpeg,.png,.webp,.txt,image/jpeg,image/png,image/webp,text/plain" multiple required>
+<button type="submit">Add files</button>
 </form>
 {gallery}
 </body>
@@ -215,32 +298,32 @@ class Handler(BaseHTTPRequestHandler):
     def _serve_file(self, raw_name: str) -> None:
         name = safe_filename(unquote(raw_name))
         if not name:
-            self._send_error_page(HTTPStatus.NOT_FOUND, 'Image not found.')
+            self._send_error_page(HTTPStatus.NOT_FOUND, 'File not found.')
             return
         path = self.server.root / name
+        suffix = path.suffix.lower()
+        limit = MAX_TEXT_BYTES if suffix in TEXT_EXTENSIONS else MAX_IMAGE_BYTES
         try:
             descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
         except OSError:
-            self._send_error_page(HTTPStatus.NOT_FOUND, 'Image not found.')
+            self._send_error_page(HTTPStatus.NOT_FOUND, 'File not found.')
             return
         try:
             info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE_BYTES:
-                self._send_error_page(HTTPStatus.NOT_FOUND, 'Image not found.')
+            if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+                self._send_error_page(HTTPStatus.NOT_FOUND, 'File not found.')
                 return
             with os.fdopen(descriptor, 'rb', closefd=False) as handle:
-                data = handle.read(MAX_FILE_BYTES + 1)
+                data = handle.read(limit + 1)
         finally:
             os.close(descriptor)
-        kind = image_kind(data)
-        if len(data) > MAX_FILE_BYTES or not kind or not extension_matches(name, kind):
-            self._send_error_page(HTTPStatus.NOT_FOUND, 'Image not found.')
+        if len(data) > limit or not file_kind(name, data):
+            self._send_error_page(HTTPStatus.NOT_FOUND, 'File not found.')
             return
-        content_type = MIME_TYPES[path.suffix.lower()]
         self._send_bytes(
             HTTPStatus.OK,
             data,
-            content_type,
+            MIME_TYPES[suffix],
             {'Content-Disposition': f'inline; filename="{name}"'},
         )
 
@@ -248,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(urlsplit(self.path).path)
         if path in ('/shared', '/shared/'):
             uploaded = parse_qs(urlsplit(self.path).query).get('uploaded', [''])[0]
-            message = f'{uploaded} image(s) added.' if uploaded.isdigit() else ''
+            message = f'{uploaded} file(s) added.' if uploaded.isdigit() else ''
             self._send_page(message)
         elif path.startswith('/shared/files/'):
             self._serve_file(path[len('/shared/files/'):])
@@ -285,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_error_page(HTTPStatus.FORBIDDEN, 'Invalid form token.')
             return
         if not files:
-            self._send_error_page(HTTPStatus.BAD_REQUEST, 'Choose at least one image.')
+            self._send_error_page(HTTPStatus.BAD_REQUEST, 'Choose at least one file.')
             return
         if len(files) > MAX_FILES:
             self._send_error_page(HTTPStatus.BAD_REQUEST, f'At most {MAX_FILES} files per upload.')
@@ -302,15 +385,16 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 errors.append(f'{filename}: unsupported filename or extension.')
                 continue
-            kind = image_kind(data)
-            if not kind or not extension_matches(name, kind):
-                errors.append(f'{filename}: not a matching JPEG, PNG, or WebP image.')
+            suffix = pathlib.PurePath(name).suffix.lower()
+            limit = MAX_TEXT_BYTES if suffix in TEXT_EXTENSIONS else MAX_IMAGE_BYTES
+            if len(data) > limit:
+                errors.append(f'{filename}: larger than the per-file limit.')
                 continue
-            if len(data) > MAX_FILE_BYTES:
-                errors.append(f'{filename}: larger than 25 MiB.')
+            if not file_kind(name, data):
+                errors.append(f'{filename}: not a matching JPEG, PNG, WebP, or UTF-8 text file.')
                 continue
             try:
-                saved.append(store_image(self.server.root, name, data).name)
+                saved.append(store_file(self.server.root, name, data).name)
             except (OSError, RuntimeError) as exc:
                 print(f'shared-space: could not store an upload: {exc}', file=sys.stderr)
                 errors.append(f'{filename}: could not be stored.')
@@ -322,7 +406,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         message = ''
         if saved:
-            message += f'{len(saved)} image(s) added. '
+            message += f'{len(saved)} file(s) added. '
         if errors:
             message += ' '.join(errors)
         self._send_page(message, HTTPStatus.OK if saved else HTTPStatus.BAD_REQUEST)
@@ -333,25 +417,68 @@ class Handler(BaseHTTPRequestHandler):
         ))
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description='Shared User Space image uploads')
-    parser.add_argument('--root', type=pathlib.Path, required=True)
-    parser.add_argument('--port', type=int, default=8082)
-    parser.add_argument('--bind', default='127.0.0.1')
-    args = parser.parse_args()
-    args.root.mkdir(parents=True, exist_ok=True)
-    os.chmod(args.root, 0o755)
-    server = ThreadingHTTPServer((args.bind, args.port), Handler)
+def patch_caddy(path: pathlib.Path) -> bool:
+    """Insert the /shared route if absent. Returns True when changed."""
+    path = pathlib.Path(path)
+    source = path.read_text(encoding='utf-8')
+    if re.search(r'(?m)^\s*@shared\b', source):
+        return False
+    match = re.search(r'(?m)^([ \t]*)reverse_proxy http://127\.0\.0\.1:6080\b', source)
+    if not match:
+        raise ValueError('Caddyfile has no 127.0.0.1:6080 reverse_proxy')
+    indent = match.group(1)
+    route = (
+        f'{indent}@shared path /shared /shared/*\n'
+        f'{indent}handle @shared {{\n'
+        f'{indent}    request_body {{\n'
+        f'{indent}        max_size 100MB\n'
+        f'{indent}    }}\n'
+        f'{indent}    reverse_proxy http://127.0.0.1:8082\n'
+        f'{indent}}}\n'
+    )
+    path.write_text(source[:match.start()] + route + source[match.start():], encoding='utf-8')
+    return True
+
+
+def serve(root: pathlib.Path, bind: str, port: int) -> int:
+    root = ensure_space(root)
+    server = ThreadingHTTPServer((bind, port), Handler)
     server.daemon_threads = True
-    server.root = args.root.resolve()
+    server.root = root.resolve()
     server.csrf_token = secrets.token_urlsafe(32)
-    print(f'Shared User Space listening on {args.bind}:{args.port}', flush=True)
+    print(f'Shared User Space listening on {bind}:{port}', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description='Shared User Space')
+    commands = parser.add_subparsers(dest='command', required=True)
+    serve_parser = commands.add_parser('serve', help='run the upload service')
+    serve_parser.add_argument('--root', type=pathlib.Path, required=True)
+    serve_parser.add_argument('--port', type=int, default=8082)
+    serve_parser.add_argument('--bind', default='127.0.0.1')
+    ensure_parser = commands.add_parser('ensure', help='create or repair storage')
+    ensure_parser.add_argument('--root', type=pathlib.Path, required=True)
+    patch_parser = commands.add_parser('patch-caddy', help='add the /shared route')
+    patch_parser.add_argument('file', type=pathlib.Path)
+    args = parser.parse_args()
+    if args.command == 'serve':
+        return serve(args.root, args.bind, args.port)
+    if args.command == 'ensure':
+        print(ensure_space(args.root))
+        return 0
+    try:
+        changed = patch_caddy(args.file)
+    except (OSError, ValueError) as exc:
+        print(f'shared-space: {exc}', file=sys.stderr)
+        return 1
+    print('patched' if changed else 'already present')
     return 0
 
 

@@ -124,7 +124,16 @@ def main():
         if not encoded.startswith('$argon2id$'):
             print('Caddy returned an unexpected password-hash format.', file=sys.stderr)
             return 1
-        caddy_path.write_text('{\n    admin off\n    auto_https off\n    servers {\n        protocols h1 h2\n    }\n}\nhttp://:8081 {\n    bind 127.0.0.1\n    header {\n        Cache-Control "no-store"\n        X-Content-Type-Options "nosniff"\n        X-Frame-Options "DENY"\n        Referrer-Policy "no-referrer"\n        -Server\n    }\n    basic_auth argon2id {\n        '+data['viewer_username']+' '+encoded+'\n    }\n    @shared path /shared /shared/*\n    handle @shared {\n        request_body {\n            max_size 100MB\n        }\n        reverse_proxy http://127.0.0.1:8082\n    }\n    reverse_proxy http://127.0.0.1:6080 {\n        stream_close_delay 5m\n    }\n}\n')
+        caddy_path.write_text('{\n    admin off\n    auto_https off\n    servers {\n        protocols h1 h2\n    }\n}\nhttp://:8081 {\n    bind 127.0.0.1\n    header {\n        Cache-Control "no-store"\n        X-Content-Type-Options "nosniff"\n        X-Frame-Options "DENY"\n        Referrer-Policy "no-referrer"\n        -Server\n    }\n    basic_auth argon2id {\n        '+data['viewer_username']+' '+encoded+'\n    }\n    reverse_proxy http://127.0.0.1:6080 {\n        stream_close_delay 5m\n    }\n}\n')
+        route = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts' / 'shared_space.py'),
+             'patch-caddy', str(caddy_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if route.returncode != 0:
+            print('Could not add the Shared User Space route; Caddyfile left for inspection.',
+                  file=sys.stderr)
+            return 1
         # Canonical Caddy formatting prevents noisy startup warnings when the
         # password is rotated later. Run formatter using the same image and CPU
         # restrictions as the password hashing operation. Never print the file.

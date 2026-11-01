@@ -28,7 +28,7 @@ class CaddyPatchTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         for folder in ('scripts', 'config/secrets', 'bin'):
             (self.root / folder).mkdir(parents=True)
-        for name in ('fix-caddy.sh', 'cpu-affinity.sh'):
+        for name in ('fix-caddy.sh', 'cpu-affinity.sh', 'shared_space.py'):
             shutil.copy2(ROOT / 'scripts' / name, self.root / 'scripts' / name)
         settings = json.loads((ROOT / 'config/settings.example.json').read_text())
         (self.root / 'config/settings.json').write_text(json.dumps(settings))
@@ -106,7 +106,9 @@ if 'apply' in sys.argv: sys.stdin.read()
     def test_future_configuration_uses_explicit_http_loopback(self):
         source = (ROOT / 'scripts/configure.py').read_text()
         self.assertIn('http://:8081 {\\n    bind 127.0.0.1', source)
-        self.assertIn('@shared path /shared /shared/*', source)
+        self.assertIn('patch-caddy', source)
+        shared = (ROOT / 'scripts/shared_space.py').read_text()
+        self.assertIn('@shared path /shared /shared/*', shared)
 
 
 if __name__ == '__main__':

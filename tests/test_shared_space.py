@@ -1,4 +1,4 @@
-"""Minimal checks for the Shared User Space upload path."""
+"""Minimal checks for the Shared User Space upload and repair path."""
 import importlib.util
 import pathlib
 import tempfile
@@ -9,31 +9,63 @@ spec = importlib.util.spec_from_file_location('shared_space', ROOT / 'scripts/sh
 shared = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(shared)
 
+CADDY = '''http://:8081 {
+    bind 127.0.0.1
+    basic_auth argon2id {
+        viewer synthetic
+    }
+    reverse_proxy http://127.0.0.1:6080 {
+        stream_close_delay 5m
+    }
+}
+'''
+
 
 class SharedSpaceTests(unittest.TestCase):
     def test_safe_filenames(self):
-        for name in ('photo.JPG', 'my photo.webp', 'a.jpeg'):
+        for name in ('photo.JPG', 'my photo.webp', 'notes.txt', 'a.jpeg'):
             self.assertIsNotNone(shared.safe_filename(name))
-        for name in ('.hidden.jpg', 'x.gif', 'x.jpg.html', 'x', ''):
+        for name in ('.hidden.jpg', 'x.gif', 'x.jpg.html', 'x.md', 'x', ''):
             self.assertIsNone(shared.safe_filename(name))
         self.assertEqual(shared.safe_filename('../x.jpg'), 'x.jpg')
 
-    def test_image_signatures_and_extension_matching(self):
+    def test_image_and_text_validation(self):
         self.assertEqual(shared.image_kind(b'\xff\xd8\xffdata'), '.jpg')
         self.assertEqual(shared.image_kind(b'\x89PNG\r\n\x1a\ndata'), '.png')
         self.assertEqual(shared.image_kind(b'RIFF1234WEBPdata'), '.webp')
         self.assertIsNone(shared.image_kind(b'GIF89adata'))
-        self.assertTrue(shared.extension_matches('photo.jpeg', '.jpg'))
-        self.assertFalse(shared.extension_matches('photo.png', '.jpg'))
+        self.assertEqual(shared.file_kind('notes.txt', 'hello\n'.encode()), '.txt')
+        self.assertIsNone(shared.file_kind('notes.txt', b'\xff\x00bad'))
+        self.assertEqual(shared.file_kind('notes.png', b'\x89PNG\r\n\x1a\n'), '.png')
+        self.assertIsNone(shared.file_kind('notes.png', b'\xff\xd8\xffdata'))
 
     def test_store_never_overwrites(self):
         with tempfile.TemporaryDirectory() as folder:
             root = pathlib.Path(folder)
-            first = shared.store_image(root, 'photo.jpg', b'\xff\xd8\xffone')
-            second = shared.store_image(root, 'photo.jpg', b'\xff\xd8\xfftwo')
+            first = shared.store_file(root, 'photo.jpg', b'\xff\xd8\xffone')
+            second = shared.store_file(root, 'photo.jpg', b'\xff\xd8\xfftwo')
             self.assertEqual(first.name, 'photo.jpg')
             self.assertEqual(second.name, 'photo-1.jpg')
             self.assertEqual(first.read_bytes(), b'\xff\xd8\xffone')
+
+    def test_ensure_removes_empty_lists_dir(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = pathlib.Path(folder)
+            (root / 'lists').mkdir()
+            shared.ensure_space(root)
+            self.assertFalse((root / 'lists').exists())
+            self.assertTrue((root / 'README.txt').is_file())
+
+    def test_patch_caddy_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / 'Caddyfile'
+            path.write_text(CADDY)
+            self.assertTrue(shared.patch_caddy(path))
+            once = path.read_text()
+            self.assertIn('@shared path /shared /shared/*', once)
+            self.assertIn('reverse_proxy http://127.0.0.1:8082', once)
+            self.assertFalse(shared.patch_caddy(path))
+            self.assertEqual(path.read_text(), once)
 
     def test_multipart_parser_returns_token_and_file(self):
         boundary = '----shared-space-test'
@@ -55,13 +87,15 @@ class SharedSpaceTests(unittest.TestCase):
         start = (ROOT / 'start-desktop.sh').read_text()
         configure = (ROOT / 'scripts/configure.py').read_text()
         fix_caddy = (ROOT / 'scripts/fix-caddy.sh').read_text()
+        script = (ROOT / 'scripts/shared_space.py').read_text()
         ignore = (ROOT / '.dockerignore').read_text()
         self.assertIn('nano', dockerfile)
         self.assertIn('scripts/shared_space.py /usr/local/bin/shared-space', dockerfile)
         self.assertIn('scripts/shared_space.py /usr/local/bin/shared-space', overlay)
-        self.assertIn('shared-space --root', start)
-        self.assertIn('@shared path /shared /shared/*', configure)
-        self.assertIn('@shared path /shared /shared/*', fix_caddy)
+        self.assertIn('shared-space serve', start)
+        self.assertIn('patch-caddy', configure)
+        self.assertIn('patch-caddy', fix_caddy)
+        self.assertIn('@shared path /shared /shared/*', script)
         self.assertIn('!scripts/shared_space.py', ignore)
 
 
