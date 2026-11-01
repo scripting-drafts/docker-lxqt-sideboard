@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Safely import a Proton WireGuard file into Gluetun Kubernetes secrets.
 
-Does NOT connect, disconnect or modify the host VPN. Host import is explicitly opt-in.
+Import does not change the host VPN. ``check-host`` verifies host/Pod key
+separation; with repair enabled it may disconnect a conflicting host profile
+and activate a non-conflicting NetworkManager WireGuard profile.
 """
 from __future__ import annotations
 
@@ -92,50 +94,250 @@ def import_for_pod(path: pathlib.Path, profile_name: str | None = None) -> dict:
     return metadata
 
 
+def nmcli_rows(fields: str, *, active: bool = False) -> list[list[str]]:
+    if not shutil.which('nmcli'):
+        raise RuntimeError('nmcli is not installed')
+    command = ['nmcli', '-t', '-f', fields, 'connection', 'show']
+    if active:
+        command.append('--active')
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError('NetworkManager is unavailable') from exc
+    if result.returncode != 0:
+        raise RuntimeError('NetworkManager could not list connections')
+    return [
+        [field.replace('\\:', ':') for field in re.split(r'(?<!\\):', line)]
+        for line in result.stdout.splitlines()
+    ]
+
+
 def active_host_connections() -> list[tuple[str, str, str]] | None:
+    try:
+        rows = nmcli_rows('NAME,TYPE,DEVICE', active=True)
+    except RuntimeError:
+        return None
+    return [
+        (row[0], row[1], row[2])
+        for row in rows
+        if len(row) >= 3 and row[1] == 'wireguard'
+    ]
+
+
+def profile_private_key(name: str) -> str | None:
     if not shutil.which('nmcli'):
         return None
     try:
-        result = subprocess.run(['nmcli', '-t', '-f', 'NAME,TYPE,DEVICE', 'connection', 'show', '--active'],
-                                capture_output=True, text=True, timeout=10, check=True)
+        result = subprocess.run(
+            ['nmcli', '--show-secrets', '--get-values', 'wireguard.private-key',
+             'connection', 'show', name],
+            capture_output=True, text=True, timeout=10,
+        )
     except (OSError, subprocess.SubprocessError):
         return None
-    result_rows = []
+    if result.returncode != 0:
+        return None
     for line in result.stdout.splitlines():
-        # NM uses backslash escaping for colons. We only need the typical simple names.
-        fields = re.split(r'(?<!\\):', line)
-        if len(fields) >= 3 and fields[-2] == 'wireguard':
-            result_rows.append((fields[0].replace('\\:', ':'), fields[-2], fields[-1]))
-    return result_rows
+        candidate = line.strip()
+        if KEY_RE.fullmatch(candidate):
+            try:
+                if len(base64.b64decode(candidate, validate=True)) == 32:
+                    return candidate
+            except ValueError:
+                continue
+    return None
 
 
-def check_host_conflict() -> int:
-    if not (SECRETS / 'wireguard_private_key').is_file():
-        print('Missing Proton WireGuard secret. Run configure.py with --wireguard-config FILE.', file=sys.stderr)
-        return 2
+def wireguard_public_key(private_key: str) -> str:
+    if not shutil.which('wg'):
+        raise RuntimeError('wg is not installed (install wireguard-tools)')
     try:
-        key = (SECRETS / 'wireguard_private_key').read_text().strip()
-        if not KEY_RE.fullmatch(key) or len(base64.b64decode(key, validate=True)) != 32:
-            raise ValueError('Bad imported WireGuard secret')
-        metadata = json.loads(SOURCE.read_text()) if SOURCE.is_file() else {}
-    except (ValueError, OSError) as err:
+        result = subprocess.run(
+            ['wg', 'pubkey'], input=private_key + '\n',
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError('wg pubkey failed') from exc
+    public_key = result.stdout.strip()
+    if result.returncode != 0 or not KEY_RE.fullmatch(public_key):
+        raise RuntimeError('wg pubkey returned an invalid public key')
+    try:
+        if len(base64.b64decode(public_key, validate=True)) != 32:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError('wg pubkey returned an invalid public key') from exc
+    return public_key
+
+
+def pod_public_key() -> str:
+    secret = SECRETS / 'wireguard_private_key'
+    if not secret.is_file():
+        raise RuntimeError('Missing Proton WireGuard secret')
+    private_key = secret.read_text().strip()
+    if not KEY_RE.fullmatch(private_key):
+        raise RuntimeError('Bad imported WireGuard secret')
+    try:
+        if len(base64.b64decode(private_key, validate=True)) != 32:
+            raise ValueError
+    except ValueError as exc:
+        raise RuntimeError('Bad imported WireGuard secret') from exc
+    return wireguard_public_key(private_key)
+
+
+def list_wireguard_profiles() -> list[dict]:
+    rows = nmcli_rows('NAME,TYPE')
+    active_rows = nmcli_rows('NAME,TYPE,DEVICE', active=True)
+    active = {
+        row[0]: row[2] if len(row) >= 3 else ''
+        for row in active_rows if row[1] == 'wireguard'
+    }
+    profiles = []
+    for row in rows:
+        if len(row) < 2 or row[1] != 'wireguard':
+            continue
+        name = row[0]
+        private_key = profile_private_key(name)
+        try:
+            public_key = wireguard_public_key(private_key) if private_key else None
+        except RuntimeError:
+            public_key = None
+        profiles.append({
+            'name': name,
+            'public_key': public_key,
+            'active': name in active,
+            'device': active.get(name, ''),
+        })
+    return profiles
+
+
+def disconnect_profile(name: str) -> None:
+    try:
+        result = subprocess.run(
+            ['nmcli', 'connection', 'down', name],
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f'could not disconnect {name}') from exc
+    if result.returncode != 0:
+        raise RuntimeError(f'could not disconnect {name}')
+
+
+def activate_profile(name: str) -> None:
+    try:
+        result = subprocess.run(
+            ['nmcli', 'connection', 'up', name],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f'could not activate {name}') from exc
+    if result.returncode != 0:
+        raise RuntimeError(f'could not activate {name}')
+
+
+def _active_conflicts(profiles: list[dict], pod_key: str) -> tuple[list[dict], list[str]]:
+    active = [profile for profile in profiles if profile['active']]
+    unknown = [profile['name'] for profile in active if not profile['public_key']]
+    return [profile for profile in active if profile['public_key'] == pod_key], unknown
+
+
+def check_host_conflict(repair: bool = True) -> int:
+    try:
+        pod_key = pod_public_key()
+    except RuntimeError as err:
         print(f'Proton configuration invalid: {err}', file=sys.stderr)
         return 2
-    active = active_host_connections()
-    if active is None:
-        print('NOTE: Could not inspect active NetworkManager WireGuard profiles; check host VPN manually.')
+    try:
+        profiles = list_wireguard_profiles()
+    except RuntimeError as err:
+        if not shutil.which('nmcli'):
+            interfaces = []
+            try:
+                interfaces = subprocess.run(
+                    ['wg', 'show', 'interfaces'], capture_output=True, text=True,
+                    timeout=10, check=True,
+                ).stdout.split()
+            except (OSError, subprocess.SubprocessError):
+                pass
+            if not interfaces:
+                print('OK: NetworkManager is absent and no active WireGuard interfaces were found.')
+                return 0
+        print(f'BLOCKED: Cannot verify active host WireGuard profiles: {err}', file=sys.stderr)
+        return 2
+    conflicts, unknown = _active_conflicts(profiles, pod_key)
+    if unknown:
+        print('BLOCKED: Cannot verify the private key of active host WireGuard profile(s): '
+              + ', '.join(unknown), file=sys.stderr)
+        print('Disconnect them manually or make their NetworkManager secrets readable.', file=sys.stderr)
+        return 2
+    if not conflicts:
+        print('OK: Pod WireGuard key differs from all active host WireGuard profiles.')
         return 0
-    profile = metadata.get('host_profile', '')
-    for name, _, dev in active:
-        if profile and (name == profile or dev == profile):
-            print(f'BLOCKED: Host WireGuard profile {name} ({dev}) is active and matches the imported file.', file=sys.stderr)
-            print('To avoid simultaneous use of the same WireGuard identity, either:', file=sys.stderr)
-            print(f'  1) Disconnect it deliberately: nmcli connection down {name!r} (may disrupt SSH!)', file=sys.stderr)
-            print('  2) Generate a separate Proton WireGuard configuration for the Kubernetes Pod.', file=sys.stderr)
-            print('The installer will never disconnect your host VPN automatically.', file=sys.stderr)
+    names = ', '.join(profile['name'] for profile in conflicts)
+    if not repair:
+        print(f'BLOCKED: Active host WireGuard shares the Pod key: {names}', file=sys.stderr)
+        return 3
+    for profile in conflicts:
+        print(f'CONFLICT: host WireGuard {profile["name"]} uses the Pod key; disconnecting it.')
+        try:
+            disconnect_profile(profile['name'])
+        except RuntimeError as err:
+            print(f'BLOCKED: {err}', file=sys.stderr)
             return 3
-        print(f'NOTE: Active host WireGuard: {name} ({dev}); verify it does not share the Pod private key.')
-    print('Proton secret format and known NetworkManager host-conflict checks passed.')
+    try:
+        profiles = list_wireguard_profiles()
+    except RuntimeError as err:
+        print(f'BLOCKED: cannot re-check host WireGuard profiles: {err}', file=sys.stderr)
+        return 2
+    conflicts, unknown = _active_conflicts(profiles, pod_key)
+    if unknown:
+        print('BLOCKED: Cannot verify remaining active host WireGuard profiles: '
+              + ', '.join(unknown), file=sys.stderr)
+        return 2
+    if conflicts:
+        print('BLOCKED: Conflicting host WireGuard profile remained active: '
+              + ', '.join(profile['name'] for profile in conflicts), file=sys.stderr)
+        return 3
+    active_safe = [profile for profile in profiles if profile['active']]
+    if active_safe:
+        print('SECURED: host WireGuard is active with a different key: '
+              + ', '.join(profile['name'] for profile in active_safe))
+        return 0
+    candidates = [
+        profile for profile in profiles
+        if not profile['active'] and profile['public_key'] and profile['public_key'] != pod_key
+    ]
+    for profile in sorted(candidates, key=lambda item: item['name'].lower()):
+        print(f'FAILOVER: activating host WireGuard {profile["name"]}.')
+        try:
+            activate_profile(profile['name'])
+        except RuntimeError as err:
+            print(f'FAILOVER: {err}; trying the next profile.')
+            continue
+        try:
+            refreshed = list_wireguard_profiles()
+        except RuntimeError as err:
+            print(f'BLOCKED: cannot re-check failover profiles: {err}', file=sys.stderr)
+            return 2
+        conflicts, unknown = _active_conflicts(refreshed, pod_key)
+        if unknown:
+            print('BLOCKED: Cannot verify failover profile(s): '
+                  + ', '.join(unknown), file=sys.stderr)
+            return 2
+        if conflicts:
+            for conflict in conflicts:
+                print(f'CONFLICT: failover profile {conflict["name"]} shares the Pod key; disconnecting it.')
+                try:
+                    disconnect_profile(conflict['name'])
+                except RuntimeError as err:
+                    print(f'BLOCKED: {err}', file=sys.stderr)
+                    return 3
+            continue
+        if any(item['name'] == profile['name'] and item['active'] for item in refreshed):
+            print(f'SECURED: host WireGuard failover is active with a different key: {profile["name"]}')
+            return 0
+        print(f'FAILOVER: {profile["name"]} did not become active; trying the next profile.')
+    print('SECURED: no active host WireGuard profile shares the Pod key; '
+          'no safe failover profile is available.')
     return 0
 
 
@@ -172,7 +374,9 @@ def main():
     imp = cmd.add_parser('import-pod', help='Import .conf key for Kubernetes; never changes host VPN')
     imp.add_argument('config', type=pathlib.Path)
     imp.add_argument('--host-profile', default=None, help='Existing host NM profile to guard against concurrent use')
-    cmd.add_parser('check-host', help='Check for active matching NetworkManager WireGuard profile before deploying')
+    check = cmd.add_parser('check-host', help='Verify host WireGuard keys; optionally fail over')
+    check.add_argument('--no-repair', action='store_true',
+                       help='Report conflicts without disconnecting or activating profiles')
     hi = cmd.add_parser('import-host', help='OPTIONAL NetworkManager import; may change host routes')
     hi.add_argument('config', type=pathlib.Path)
     hi.add_argument('--name', default='wireguard')
@@ -184,7 +388,7 @@ def main():
             print(f'Peer endpoint in source file: {info["endpoint"]} (Gluetun may choose another free server).')
             print('Private key was not printed and is stored in config/secrets/wireguard_private_key (0600).')
         elif args.command == 'check-host':
-            return check_host_conflict()
+            return check_host_conflict(repair=not args.no_repair)
         elif args.command == 'import-host':
             host_import(args.config, args.name)
     except (ValueError, OSError, configparser.Error, subprocess.CalledProcessError, RuntimeError) as err:

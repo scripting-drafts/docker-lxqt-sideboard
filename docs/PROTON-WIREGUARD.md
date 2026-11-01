@@ -10,7 +10,7 @@ This guide combines Proton's manual WireGuard instructions with the project's Gl
 | Host `wireguard-tools` (`wg`/`wg-quick`) + `iproute2` | `bootstrap-host.sh` or `setup-proton.sh` |
 | TUN device checks | `verify-tun.sh` (included in setup-proton unless skipped) |
 | Validate Proton `.conf`, import Gluetun secret | `setup-proton.sh` / `proton-wireguard.py` |
-| Detect same known active host VPN profile | `proton-wireguard.py check-host` (called by deploy.sh) |
+| Verify host/Pod key separation and fail over | `proton-wireguard.py check-host` (called by deploy.sh) |
 | Run the VPN and firewall for the desktop Pod | Gluetun restartable init-sidecar |
 | Choose free-tier servers | `FREE_ONLY=on` (default) and optional `SERVER_COUNTRIES` |
 | Validate Pod VPN health and show egress IP | `verify-proton.sh` |
@@ -42,7 +42,7 @@ These are illustrative host commands, *not* a prerequisite for the Pod. `nmcli` 
 
 ## 2. Prepare the Proton key for Kubernetes (recommended)
 
-The installer runs with **no required arguments**: `./install.sh`. It checks `~/Documents/wireguard.conf` first and **prompts for a `.conf` path if that file is missing**, before changing the host. You can also provide `--wireguard-config /path/to/file.conf` (or a positional path) as an optional override. You do not need to rename your downloaded file. The `.conf` filename is *not* necessarily the active NetworkManager connection name. For an existing host connection named `wg-example` using the same key, use a separate Proton profile for Kubernetes or pass `--host-profile wg-example` for the name-based conflict guard. The installer does not automatically disconnect a host VPN.
+The installer runs with **no required arguments**: `./install.sh`. It checks `~/Documents/wireguard.conf` first and **prompts for a `.conf` path if that file is missing**, before changing the host. You can also provide `--wireguard-config /path/to/file.conf` (or a positional path) as an optional override. You do not need to rename your downloaded file. The `.conf` filename is *not* necessarily the active NetworkManager connection name. `check-host` compares actual public keys, so the name-based `--host-profile` hint is no longer required for detection. It may disconnect a conflicting host profile and activate another available WireGuard profile; use out-of-band access when the host VPN carries SSH.
 
 
 ```bash
@@ -51,19 +51,19 @@ The installer runs with **no required arguments**: `./install.sh`. It checks `~/
 # Log out and in if Docker group membership was changed.
 ./scripts/setup-proton.sh \
   --config "$HOME/Documents/wireguard.conf" \
-  --host-profile wg-example  # only if the matching host connection is named wg-example
+  --host-profile wg-example  # optional hint; keys are compared directly
 ```
 
-`setup-proton.sh` installs `wireguard-tools` if it is missing, verifies the TUN device inside a disposable Docker container, parses the configuration and saves only the **private key** as `config/secrets/wireguard_private_key` with mode `0600`. It records nonsecret source metadata in `config/proton-source.json` with mode `0600`. Source files are **not copied into Kubernetes** and are not printed. Importing a source file **does not** activate, deactivate or change your host's existing VPN.
+`setup-proton.sh` installs `wireguard-tools` if it is missing, verifies the TUN device inside a disposable Docker container, parses the configuration and saves only the **private key** as `config/secrets/wireguard_private_key` with mode `0600`. It records nonsecret source metadata in `config/proton-source.json` with mode `0600`. Source files are **not copied into Kubernetes** and are not printed. Importing a source file does not change the host VPN; the following `check-host` may disconnect or activate host profiles to secure key separation.
 
 Alternatively, do the import during the interactive configuration wizard:
 
 ```bash
 python scripts/configure.py \
-  --host-profile wg-example  # only if the matching host connection is named wg-example
+  --host-profile wg-example  # optional hint; keys are compared directly
 ```
 
-The rest of the wizard prompts for Tailscale/Caddy parameters and persists your other settings. Enter to retain the already imported Proton key if prompted. You can also paste a private key through an invisible prompt, without a source `.conf` file; then the importer cannot associate it with a known host connection and duplicate-key safety checks are less complete.
+The rest of the wizard prompts for Tailscale/Caddy parameters and persists your other settings. Enter to retain the already imported Proton key if prompted. You can also paste a private key through an invisible prompt, without a source `.conf` file; source metadata is then only a hint, but `check-host` still compares the Pod key directly with host profiles.
 
 ### How Gluetun consumes the configuration
 
@@ -83,18 +83,28 @@ Gluetun selects a Proton server from its own provider catalog; it does not autom
 
 Using the same WireGuard private key from both the host and Pod may cause peer endpoint roaming/flapping.
 
-The `deploy.sh` script invokes:
+`deploy.sh`, `install.sh`, and `setup-proton.sh` invoke:
 
 ```bash
 python3 scripts/proton-wireguard.py check-host
 ```
 
-If the known matching NetworkManager profile is active, deployment **fails closed** with instructions. The script **never disconnects** the host for you. Two safe paths:
+The check derives the Pod public key from `config/secrets/wireguard_private_key`, derives a public key for every NetworkManager WireGuard profile, and compares them. It never prints private keys.
 
-1. Prefer generating a **separate Proton WireGuard configuration** for the Pod (different private key) if the host VPN should remain connected. Run `setup-proton.sh` again with the new file and its distinct host-profile name.
-2. Otherwise, after ensuring you have local/out-of-band network access, consciously disconnect your existing host tunnel: `nmcli connection down wg-example`. This can interrupt SSH/network access. Then retry `./scripts/deploy.sh`.
+If an active host profile shares the Pod key, repair mode:
 
-The guard can only match a known NetworkManager profile. It cannot detect every reuse of a WireGuard key under a different name, via wg-quick, or on another machine. **Never assume successful preflight guarantees exclusive use of a key.**
+1. Disconnects that profile with `nmcli connection down`.
+2. Re-checks every active profile.
+3. Activates another available NetworkManager WireGuard profile whose key differs.
+4. Repeats verification. If no safe profile exists, the host VPN is left disconnected.
+
+This can interrupt SSH or host networking. Keep local/out-of-band access. Read-only mode is available:
+
+```bash
+python3 scripts/proton-wireguard.py check-host --no-repair
+```
+
+Only NetworkManager WireGuard profiles are inspected. A key reused via `wg-quick`, another manager, or another machine cannot be detected here. **Never assume successful preflight guarantees exclusive use of a key.**
 
 ## 4. Deploy and verify actual network egress
 

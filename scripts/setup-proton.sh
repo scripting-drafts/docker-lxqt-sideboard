@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proton VPN Free + WireGuard integration for Gluetun/Kubernetes.
-# By design, NEVER activates or disconnects a VPN connection on the Ubuntu host.
+# May reconcile host WireGuard profiles when their key collides with the Pod.
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export LXQT_PROJECT_ROOT="$ROOT"
@@ -23,7 +23,8 @@ Usage: ./scripts/setup-proton.sh --config FILE [--host-profile NAME] [--skip-tun
 - Installs Ubuntu WireGuard utilities if needed.
 - Validates /dev/net/tun and optionally tests its ioctl inside a disposable container.
 - Parses Proton's downloaded .conf and imports its private key as a protected Gluetun secret.
-- Never connects/disconnects the host VPN, changes routes/DNS or uploads credentials.
+- Verifies host/Pod key separation; may disconnect a conflicting host WireGuard profile and activate a non-conflicting one.
+- Never uploads credentials or prints private keys.
 - Requires Docker for --container-test; run ./scripts/bootstrap-host.sh first.
 EOF
       exit 0 ;;
@@ -44,7 +45,7 @@ cmd=(python3 "$ROOT/scripts/proton-wireguard.py" import-pod "$CONFIG_FILE")
 [[ -n "$HOST_PROFILE" ]] && cmd+=(--host-profile "$HOST_PROFILE")
 "${cmd[@]}"
 if ! python3 "$ROOT/scripts/proton-wireguard.py" check-host; then
-  echo 'Configuration imported, but deployment is BLOCKED while the matching host connection is active.' >&2
-  echo 'Disconnect it deliberately, or import a separate Proton profile for the Pod.' >&2
+  echo 'Configuration imported, but host/Pod WireGuard key separation could not be secured.' >&2
+  echo 'Review the host WireGuard profiles before deploying.' >&2
 fi
 printf '\nProton configuration prepared. Next: python3 scripts/configure.py and ./scripts/deploy.sh\n'

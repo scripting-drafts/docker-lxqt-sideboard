@@ -45,10 +45,69 @@ class ProtonConfigTests(unittest.TestCase):
                 self.assertEqual(secret.stat().st_mode & 0o777, 0o600)
                 self.assertEqual(proton.SOURCE.stat().st_mode & 0o777, 0o600)
                 self.assertNotIn('PrivateKey', proton.SOURCE.read_text())
-                with patch.object(proton, 'active_host_connections', return_value=[('wg-example', 'wireguard', 'wg-example')]):
-                    self.assertEqual(proton.check_host_conflict(), 3)
-                with patch.object(proton, 'active_host_connections', return_value=[]):
-                    self.assertEqual(proton.check_host_conflict(), 0)
+
+    def check(self, profiles, *, pod='pod-key', repair=True):
+        state = [dict(profile) for profile in profiles]
+        calls = []
+
+        def list_profiles():
+            return [dict(profile) for profile in state]
+
+        def disconnect(name):
+            calls.append(('down', name))
+            for profile in state:
+                if profile['name'] == name:
+                    profile['active'] = False
+
+        def activate(name):
+            calls.append(('up', name))
+            for profile in state:
+                if profile['name'] == name:
+                    profile['active'] = True
+
+        with patch.object(proton, 'pod_public_key', return_value=pod), \
+             patch.object(proton, 'list_wireguard_profiles', side_effect=list_profiles), \
+             patch.object(proton, 'disconnect_profile', side_effect=disconnect), \
+             patch.object(proton, 'activate_profile', side_effect=activate):
+            return proton.check_host_conflict(repair=repair), calls, state
+
+    def test_host_key_verification(self):
+        result, calls, _ = self.check([
+            {'name': 'wg-host', 'public_key': 'other-key', 'active': True, 'device': 'wg-host'},
+        ])
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [])
+
+        result, calls, _ = self.check([
+            {'name': 'wg-host', 'public_key': 'pod-key', 'active': True, 'device': 'wg-host'},
+        ], repair=False)
+        self.assertEqual(result, 3)
+        self.assertEqual(calls, [])
+
+    def test_conflict_disconnects_and_fails_over(self):
+        result, calls, state = self.check([
+            {'name': 'wg-host', 'public_key': 'pod-key', 'active': True, 'device': 'wg-host'},
+            {'name': 'wireguard', 'public_key': 'other-key', 'active': False, 'device': ''},
+        ])
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [('down', 'wg-host'), ('up', 'wireguard')])
+        self.assertTrue(next(profile for profile in state if profile['name'] == 'wireguard')['active'])
+
+    def test_conflict_without_fallback_leaves_vpn_down(self):
+        result, calls, state = self.check([
+            {'name': 'wg-host', 'public_key': 'pod-key', 'active': True, 'device': 'wg-host'},
+            {'name': 'wireguard', 'public_key': 'pod-key', 'active': False, 'device': ''},
+        ])
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [('down', 'wg-host')])
+        self.assertFalse(any(profile['active'] for profile in state))
+
+    def test_unverifiable_active_profile_fails_closed(self):
+        result, calls, _ = self.check([
+            {'name': 'wg-host', 'public_key': None, 'active': True, 'device': 'wg-host'},
+        ])
+        self.assertEqual(result, 2)
+        self.assertEqual(calls, [])
 
     def test_rejects_invalid_key_and_missing_peer(self):
         with tempfile.TemporaryDirectory() as td:
@@ -76,6 +135,7 @@ class ProtonConfigTests(unittest.TestCase):
         self.assertIn('wireguard-tools iproute2',bootstrap)
         deploy=(ROOT/'scripts/deploy.sh').read_text()
         self.assertIn('proton-wireguard.py check-host', deploy)
+        self.assertIn('--driver-opt network=host', deploy)
         setup=(ROOT/'scripts/setup-proton.sh').read_text()
         self.assertNotIn('nmcli connection up',setup)
         self.assertNotIn('wg-quick up',setup)

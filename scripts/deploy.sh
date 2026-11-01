@@ -18,6 +18,10 @@ grep -qF '@shared path /shared' config/Caddyfile || {
 [[ -c /dev/net/tun ]] || { echo 'Missing /dev/net/tun on host. Load tun module / check host.' >&2; exit 1; }
 python3 scripts/proton-wireguard.py check-host
 docker info >/dev/null
+if ! getent hosts registry-1.docker.io >/dev/null 2>&1; then
+  echo 'Cannot resolve registry-1.docker.io; fix host DNS/VPN before building.' >&2
+  exit 1
+fi
 python3 scripts/render.py
 readarray -t opts < <(python3 - <<'PY'
 import json
@@ -71,15 +75,27 @@ for img in "${opts[5]}" "${opts[6]}" "${opts[7]}"; do
 done
 # Never use the unrestricted Docker-daemon builder for project compilation.
 # A project-specific BuildKit container has an enforced cpuset from creation.
+# Use host networking so the long-lived builder follows the host resolver and
+# VPN state; bridge networking pins stale DNS servers into the container and
+# breaks base-image metadata resolution after a VPN/DNS change.
 BUILDER="lxqt-cpu-${CLUSTER}"
+BUILDER_NODE="buildx_buildkit_${BUILDER}0"
+if docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
+  current_network="$(docker inspect "$BUILDER_NODE" --format '{{.HostConfig.NetworkMode}}' 2>/dev/null || true)"
+  if [[ "$current_network" != 'host' ]]; then
+    echo "Recreating BuildKit builder $BUILDER (network=${current_network:-unknown}; stale DNS state)."
+    docker buildx use default >/dev/null 2>&1 || true
+    docker buildx rm "$BUILDER" >/dev/null
+  fi
+fi
 if ! docker buildx inspect "$BUILDER" >/dev/null 2>&1; then
   # Buildx CSV-parses --driver-opt. Quote the *entire* key=value token because
   # cpuset-cpus contains commas (unquoted: invalid value "1", expecting k=v).
   docker buildx create --name "$BUILDER" --driver docker-container \
+    --driver-opt network=host \
     --driver-opt "\"cpuset-cpus=$CPUS\"" >/dev/null
 fi
 # Also reconcile existing builder containers when CPU settings change.
-BUILDER_NODE="buildx_buildkit_${BUILDER}0"
 if docker inspect "$BUILDER_NODE" >/dev/null 2>&1; then
   docker update --cpuset-cpus "$CPUS" "$BUILDER_NODE" >/dev/null
 fi
@@ -87,6 +103,9 @@ docker buildx inspect "$BUILDER" --bootstrap >/dev/null
 # Inspect again because bootstrap may create the container on this invocation.
 [[ "$(docker inspect "$BUILDER_NODE" --format '{{.HostConfig.CpusetCpus}}')" == "$CPUS" ]] || {
   echo 'Project BuildKit container CPU restriction missing; refusing build.' >&2; exit 1;
+}
+[[ "$(docker inspect "$BUILDER_NODE" --format '{{.HostConfig.NetworkMode}}')" == 'host' ]] || {
+  echo 'Project BuildKit container is not on host networking; refusing build.' >&2; exit 1;
 }
 docker buildx build --builder "$BUILDER" --pull --load -t "$IMAGE" "$ROOT"
 kind load docker-image "$IMAGE" --name "$CLUSTER"

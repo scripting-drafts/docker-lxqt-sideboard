@@ -89,7 +89,7 @@ if (( DRY_RUN )); then
   "$ROOT/scripts/install-docker.sh" --dry-run
   printf 'WireGuard filename: %s%s\n' "$WIREGUARD_CONFIG" "$( [[ -f "$WIREGUARD_CONFIG" ]] || printf ' (missing: installer will ask for a path)' )"
   printf 'Python build CPU affinity: %s\n' "$BOOTSTRAP_CPUS"
-  printf 'Profile conflict guard: %s\n' "${HOST_PROFILE:-<defaults to source filename stem; override for different NetworkManager name>}"
+  printf 'Optional host profile hint: %s\n' "${HOST_PROFILE:-<none; host and Pod keys are compared directly>}"
   printf 'Will reconcile missing/changed software first, then run interactive credential wizard and deploy Kind.\n'
   printf 'Timers enabled: %s; Funnel enabled: %s\n' "$((1-SKIP_TIMERS))" "$((1-SKIP_FUNNEL))"
   exit 0
@@ -213,7 +213,7 @@ step '4/7 — Interactive deployment configuration and credential prompts'
 configure=(python3 "$ROOT/scripts/configure.py")
 # Already imported via stage 3; keep wizard from prompting twice for filename.
 "${configure[@]}"
-step '5/7 — Refuse conflicting active host WireGuard identity'
+step '5/7 — Verify host/Pod WireGuard key separation and fail over'
 python3 "$ROOT/scripts/proton-wireguard.py" check-host
 step '6/7 — Deploy Kind cluster, Pod and persistent storage'
 "$ROOT/scripts/deploy.sh"

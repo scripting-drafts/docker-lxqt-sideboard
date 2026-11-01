@@ -43,9 +43,14 @@ class CpuSafetyTests(unittest.TestCase):
         import re
         deploy=(ROOT/'scripts/deploy.sh').read_text()
         lines=deploy.splitlines()
-        line=next((lines[i+1].strip() for i,l in enumerate(lines[:-1])
-                   if 'docker buildx create --name "$BUILDER"' in l),None)
-        self.assertIsNotNone(line,'Buildx create invocation not found')
+        create=next((i for i,l in enumerate(lines)
+                     if 'docker buildx create --name "$BUILDER"' in l),None)
+        self.assertIsNotNone(create,'Buildx create invocation not found')
+        block='\n'.join(lines[create:create+5])
+        self.assertIn('--driver-opt network=host',block)
+        line=next((l.strip() for l in lines[create:create+5]
+                   if 'cpuset-cpus=$CPUS' in l),None)
+        self.assertIsNotNone(line,'Buildx cpuset option not found')
         self.assertTrue(line.startswith('--driver-opt '),line)
         line=line.removeprefix('--driver-opt ').removesuffix(' >/dev/null')
         code='CPUS="0,1,3-7,9-11"; printf "%s\\n" '+line
