@@ -418,25 +418,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def patch_caddy(path: pathlib.Path) -> bool:
-    """Insert the /shared route if absent. Returns True when changed."""
+    """Insert the root noVNC redirect and /shared route when absent."""
     path = pathlib.Path(path)
     source = path.read_text(encoding='utf-8')
-    if re.search(r'(?m)^\s*@shared\b', source):
-        return False
     match = re.search(r'(?m)^([ \t]*)reverse_proxy http://127\.0\.0\.1:6080\b', source)
     if not match:
         raise ValueError('Caddyfile has no 127.0.0.1:6080 reverse_proxy')
     indent = match.group(1)
-    route = (
-        f'{indent}@shared path /shared /shared/*\n'
-        f'{indent}handle @shared {{\n'
-        f'{indent}    request_body {{\n'
-        f'{indent}        max_size 100MB\n'
-        f'{indent}    }}\n'
-        f'{indent}    reverse_proxy http://127.0.0.1:8082\n'
-        f'{indent}}}\n'
-    )
-    path.write_text(source[:match.start()] + route + source[match.start():], encoding='utf-8')
+    additions = ''
+    if not re.search(r'(?m)^\s*redir\s+/\s+/vnc\.html\b', source):
+        additions += f'{indent}redir / /vnc.html 302\n'
+    if not re.search(r'(?m)^\s*@shared\b', source):
+        additions += (
+            f'{indent}@shared path /shared /shared/*\n'
+            f'{indent}handle @shared {{\n'
+            f'{indent}    request_body {{\n'
+            f'{indent}        max_size 100MB\n'
+            f'{indent}    }}\n'
+            f'{indent}    reverse_proxy http://127.0.0.1:8082\n'
+            f'{indent}}}\n'
+        )
+    if not additions:
+        return False
+    path.write_text(source[:match.start()] + additions + source[match.start():], encoding='utf-8')
     return True
 
 

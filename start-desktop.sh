@@ -6,7 +6,7 @@ umask 077
 : "${XAUTHORITY:=$HOME/.Xauthority}"
 : "${XDG_RUNTIME_DIR:=/tmp/xdg-runtime}"
 : "${RESOLUTION:=1920x1080x24}"
-: "${MULTIPTR:=1}"
+: "${MULTIPTR:=0}"
 
 if [[ ! "$RESOLUTION" =~ ^[0-9]{3,5}x[0-9]{3,5}x(16|24|32)$ ]]; then
   echo 'Invalid RESOLUTION (expected e.g. 1920x1080x24)' >&2; exit 1
@@ -67,7 +67,7 @@ vnc_args=(-threads -display "$DISPLAY" -auth "$XAUTHORITY" -rfbport 5900 -localh
           -noxdamage -xkb -noremote -noclipboard)
 if [[ "$MULTIPTR" == 1 ]]; then
   vnc_args+=(-multiptr)
-  echo 'x11vnc multi-pointer mode requested; actual browser/XInput2 support must be verified'
+  echo 'NOTE: experimental multi-pointer enabled; disable multi_pointer if noVNC input capture fails.' >&2
 fi
 x11vnc "${vnc_args[@]}" &
 pids+=("$!")

@@ -42,6 +42,7 @@ RUN set -eux; \
     mkdir -p /home/desktop/.vnc; \
     chown -R 1000:1000 /home/desktop
 
+COPY --chmod=0644 assets/novnc-index.html /usr/share/novnc/index.html
 COPY --chmod=0755 start-desktop.sh /usr/local/bin/start-desktop
 COPY --chmod=0755 scripts/check-vnc.py /usr/local/bin/check-vnc
 COPY --chmod=0755 scripts/shared_space.py /usr/local/bin/shared-space

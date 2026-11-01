@@ -213,7 +213,7 @@ spec:
         - name: RESOLUTION
           value: 1920x1080x24
         - name: MULTIPTR
-          value: '1'
+          value: '0'
         volumeMounts:
         - name: desktop-home
           mountPath: /home/desktop
