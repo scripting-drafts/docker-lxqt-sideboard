@@ -1,4 +1,4 @@
-# Sanitization review
+# Security review
 
 This copy contains source code and synthetic examples, not live deployment state.
 It is not a guarantee that all confidential information has been identified.
@@ -45,6 +45,6 @@ every secret, transformed value, personal detail, or confidential algorithm.
 No external secret-scanning product or independent human review was performed.
 Review all files and history before publishing; use fresh credentials if deploying.
 
-The public repository was recreated with sanitized history and generic authorship.
+The public repository was recreated with a reviewed history and generic authorship.
 Hosting providers may retain internal backups or caches beyond repository deletion;
 no live secret value was found in any removed history.
