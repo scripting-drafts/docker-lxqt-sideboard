@@ -9,4 +9,9 @@ NS="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["namespace"
 K=(kubectl --kubeconfig "$ROOT/config/kubeconfig" -n "$NS")
 "${K[@]}" exec deployment/lxqt-desktop -c tailscale -- tailscale funnel --bg 8081
 "${K[@]}" exec deployment/lxqt-desktop -c tailscale -- tailscale funnel status
-printf '\nWhen Tailscale requests Funnel enablement, approve it in your tailnet admin interface.\n'
+if desktop_url="$("$ROOT/scripts/funnel-url.sh" 2>/dev/null)"; then
+  printf '\nDesktop URL: %s\n' "$desktop_url"
+else
+  printf '\nDesktop URL: not assigned yet; approve Funnel, then run ./scripts/funnel-url.sh\n'
+fi
+printf 'When Tailscale requests Funnel enablement, approve it in your tailnet admin interface.\n'

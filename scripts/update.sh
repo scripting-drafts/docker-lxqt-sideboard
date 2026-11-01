@@ -16,3 +16,6 @@ NS="$(python3 -c 'import json;print(json.load(open("config/settings.json"))["nam
 kubectl --kubeconfig config/kubeconfig -n "$NS" rollout status deployment/lxqt-desktop --timeout=420s
 # Funnel config persists in tailscale state, but verify after restart.
 kubectl --kubeconfig config/kubeconfig -n "$NS" exec deployment/lxqt-desktop -c tailscale -- tailscale funnel status || true
+if desktop_url="$(./scripts/funnel-url.sh 2>/dev/null)"; then
+  printf '\nDesktop URL: %s\n' "$desktop_url"
+fi

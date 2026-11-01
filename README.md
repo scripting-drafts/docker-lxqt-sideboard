@@ -6,5 +6,5 @@ Create fresh credentials and review settings before use; do not deploy blindly.
 The installer can modify `~/.bashrc`; inspect its scripts before running it.
 Run offline tests with `bash scripts/test.sh` after reviewing host CPU settings.
 - Shared User Space: authenticated `/shared/` uploads JPG/JPEG/PNG/WebP/TXT; `nano` edits lists.
-- Root URL redirects to noVNC `vnc.html`; disable experimental `multi_pointer` if input capture fails.
+- Root URL redirects to noVNC `vnc.html`; multi-pointer is disabled unless `LXQT_ALLOW_MULTIPTR=1`.
 The original project and its running deployment were not modified.

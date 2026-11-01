@@ -218,4 +218,5 @@ trap - EXIT INT TERM
 "$ROOT/scripts/verify-cpus.sh"
 printf '\nDeployed: %s, namespace=%s, cpus=%s\n' "$CLUSTER" "$NS" "$CPUS"
 printf 'Your public URL is assigned when you run: ./scripts/enable-funnel.sh\n'
+printf 'Open the returned URL with /vnc.html appended, or run ./scripts/funnel-url.sh.\n'
 printf 'Pod status: kubectl --kubeconfig config/kubeconfig -n %s get pods\n' "$NS"

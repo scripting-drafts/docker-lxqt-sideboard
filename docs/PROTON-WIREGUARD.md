@@ -141,7 +141,7 @@ out-of-band access.
 python3 scripts/configure.py
 ./scripts/deploy.sh
 ./scripts/verify-proton.sh
-./scripts/enable-funnel.sh
+./scripts/enable-funnel.sh   # prints the URL with /vnc.html appended
 ```
 
 `verify-proton.sh` checks the Gluetun health endpoint and prints the Pod's externally observed public IP. It also shows the host's public IP if available. The tunnel can be healthy even if a firewall configuration is wrong. **An egress-IP comparison alone does not prove leak-proof VPN enforcement**; test a controlled VPN outage and verify the desktop cannot reach the internet before trusting the kill switch with sensitive workloads. Keep the shared public desktop private until checks are complete.

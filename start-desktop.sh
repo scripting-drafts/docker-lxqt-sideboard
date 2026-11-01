@@ -65,9 +65,14 @@ pids+=("$!")
 vnc_args=(-threads -display "$DISPLAY" -auth "$XAUTHORITY" -rfbport 5900 -localhost
           -forever -shared -alwaysshared -rfbauth "$HOME/.vnc/passwd"
           -noxdamage -xkb -noremote -noclipboard)
+if [[ "$MULTIPTR" == 1 && "${LXQT_ALLOW_MULTIPTR:-0}" != 1 ]]; then
+  echo 'WARNING: x11vnc multi-pointer disabled for noVNC input compatibility.' >&2
+  echo 'Set LXQT_ALLOW_MULTIPTR=1 only for experimental independent pointers.' >&2
+  MULTIPTR=0
+fi
 if [[ "$MULTIPTR" == 1 ]]; then
   vnc_args+=(-multiptr)
-  echo 'NOTE: experimental multi-pointer enabled; disable multi_pointer if noVNC input capture fails.' >&2
+  echo 'NOTE: experimental multi-pointer enabled; verified compatible browser/XInput2 behavior is required.' >&2
 fi
 x11vnc "${vnc_args[@]}" &
 pids+=("$!")
