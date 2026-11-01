@@ -41,14 +41,16 @@ exposed by the `/shared/` route.
 ## Existing deployments
 
 New configurations written by `scripts/configure.py` include the `/shared/`
-route. For an existing deployment, update the Caddyfile and restart the Pod:
+route. For an existing deployment, rebuild and redeploy the desktop image:
 
 ```bash
-./scripts/fix-caddy.sh --apply
+./scripts/update.sh
 ```
 
 `scripts/update.sh` runs the local Caddy patch before rebuilding. A direct
-`scripts/deploy.sh` refuses to continue when the route is missing.
+`scripts/deploy.sh` refuses to continue when the route is missing. If the image
+already contains this code, `./scripts/fix-caddy.sh --apply` updates only the
+Caddy route and restarts the Pod.
 
 ## Security notes
 

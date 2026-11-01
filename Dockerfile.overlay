@@ -3,6 +3,7 @@
 # Preserves the base's packages, user, environment, and filesystem ownership.
 FROM desktop-base
 
+# desktop-base must provide nano and python3 for the Shared User Space.
 COPY --chmod=0755 start-desktop.sh /usr/local/bin/start-desktop
 COPY --chmod=0755 scripts/check-vnc.py /usr/local/bin/check-vnc
 COPY --chmod=0755 scripts/shared_space.py /usr/local/bin/shared-space
