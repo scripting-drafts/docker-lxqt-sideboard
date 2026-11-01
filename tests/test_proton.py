@@ -46,7 +46,7 @@ class ProtonConfigTests(unittest.TestCase):
                 self.assertEqual(proton.SOURCE.stat().st_mode & 0o777, 0o600)
                 self.assertNotIn('PrivateKey', proton.SOURCE.read_text())
 
-    def check(self, profiles, *, pod='pod-key', repair=True):
+    def check(self, profiles, *, pod='pod-key', repair=True, scores=None):
         state = [dict(profile) for profile in profiles]
         calls = []
 
@@ -65,10 +65,20 @@ class ProtonConfigTests(unittest.TestCase):
                 if profile['name'] == name:
                     profile['active'] = True
 
+        def probe(name):
+            calls.append(('probe', name))
+            if scores is None:
+                raise AssertionError('unexpected load probe')
+            return proton.WireGuardInterface(
+                name=name, device=name, active=True, public_key='other-key',
+                latency_ms=scores[name], packet_loss=0,
+            )
+
         with patch.object(proton, 'pod_public_key', return_value=pod), \
              patch.object(proton, 'list_wireguard_profiles', side_effect=list_profiles), \
              patch.object(proton, 'disconnect_profile', side_effect=disconnect), \
-             patch.object(proton, 'activate_profile', side_effect=activate):
+             patch.object(proton, 'activate_profile', side_effect=activate), \
+             patch.object(proton, 'probe_profile_load', side_effect=probe):
             return proton.check_host_conflict(repair=repair), calls, state
 
     def test_host_key_verification(self):
@@ -92,6 +102,19 @@ class ProtonConfigTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(calls, [('down', 'wg-host'), ('up', 'wireguard')])
         self.assertTrue(next(profile for profile in state if profile['name'] == 'wireguard')['active'])
+
+    def test_load_based_failover_prefers_lower_score(self):
+        result, calls, state = self.check([
+            {'name': 'wg-host', 'public_key': 'pod-key', 'active': True, 'device': 'wg-host'},
+            {'name': 'wireguard-a', 'public_key': 'key-a', 'active': False, 'device': ''},
+            {'name': 'wireguard-b', 'public_key': 'key-b', 'active': False, 'device': ''},
+        ], scores={'wireguard-a': 100.0, 'wireguard-b': 10.0})
+        self.assertEqual(result, 0)
+        self.assertEqual(calls, [
+            ('down', 'wg-host'), ('probe', 'wireguard-a'),
+            ('probe', 'wireguard-b'), ('up', 'wireguard-b'),
+        ])
+        self.assertTrue(next(p for p in state if p['name'] == 'wireguard-b')['active'])
 
     def test_conflict_without_fallback_leaves_vpn_down(self):
         result, calls, state = self.check([

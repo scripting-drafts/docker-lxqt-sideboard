@@ -3,7 +3,8 @@
 
 Import does not change the host VPN. ``check-host`` verifies host/Pod key
 separation; with repair enabled it may disconnect a conflicting host profile
-and activate a non-conflicting NetworkManager WireGuard profile.
+and activate a non-conflicting NetworkManager WireGuard profile, using the
+shared interface library's latency/loss score when several candidates exist.
 """
 from __future__ import annotations
 
@@ -19,6 +20,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from wireguard_library import (  # noqa: E402
+    WireGuardInterface,
+    discover,
+    measure,
+    nmcli_rows,
+    wireguard_public_key,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SECRETS = ROOT / 'config' / 'secrets'
@@ -94,24 +104,6 @@ def import_for_pod(path: pathlib.Path, profile_name: str | None = None) -> dict:
     return metadata
 
 
-def nmcli_rows(fields: str, *, active: bool = False) -> list[list[str]]:
-    if not shutil.which('nmcli'):
-        raise RuntimeError('nmcli is not installed')
-    command = ['nmcli', '-t', '-f', fields, 'connection', 'show']
-    if active:
-        command.append('--active')
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError('NetworkManager is unavailable') from exc
-    if result.returncode != 0:
-        raise RuntimeError('NetworkManager could not list connections')
-    return [
-        [field.replace('\\:', ':') for field in re.split(r'(?<!\\):', line)]
-        for line in result.stdout.splitlines()
-    ]
-
-
 def active_host_connections() -> list[tuple[str, str, str]] | None:
     try:
         rows = nmcli_rows('NAME,TYPE,DEVICE', active=True)
@@ -122,51 +114,6 @@ def active_host_connections() -> list[tuple[str, str, str]] | None:
         for row in rows
         if len(row) >= 3 and row[1] == 'wireguard'
     ]
-
-
-def profile_private_key(name: str) -> str | None:
-    if not shutil.which('nmcli'):
-        return None
-    try:
-        result = subprocess.run(
-            ['nmcli', '--show-secrets', '--get-values', 'wireguard.private-key',
-             'connection', 'show', name],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    for line in result.stdout.splitlines():
-        candidate = line.strip()
-        if KEY_RE.fullmatch(candidate):
-            try:
-                if len(base64.b64decode(candidate, validate=True)) == 32:
-                    return candidate
-            except ValueError:
-                continue
-    return None
-
-
-def wireguard_public_key(private_key: str) -> str:
-    if not shutil.which('wg'):
-        raise RuntimeError('wg is not installed (install wireguard-tools)')
-    try:
-        result = subprocess.run(
-            ['wg', 'pubkey'], input=private_key + '\n',
-            capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError('wg pubkey failed') from exc
-    public_key = result.stdout.strip()
-    if result.returncode != 0 or not KEY_RE.fullmatch(public_key):
-        raise RuntimeError('wg pubkey returned an invalid public key')
-    try:
-        if len(base64.b64decode(public_key, validate=True)) != 32:
-            raise ValueError
-    except ValueError as exc:
-        raise RuntimeError('wg pubkey returned an invalid public key') from exc
-    return public_key
 
 
 def pod_public_key() -> str:
@@ -185,29 +132,38 @@ def pod_public_key() -> str:
 
 
 def list_wireguard_profiles() -> list[dict]:
-    rows = nmcli_rows('NAME,TYPE')
-    active_rows = nmcli_rows('NAME,TYPE,DEVICE', active=True)
-    active = {
-        row[0]: row[2] if len(row) >= 3 else ''
-        for row in active_rows if row[1] == 'wireguard'
-    }
-    profiles = []
-    for row in rows:
-        if len(row) < 2 or row[1] != 'wireguard':
-            continue
-        name = row[0]
-        private_key = profile_private_key(name)
-        try:
-            public_key = wireguard_public_key(private_key) if private_key else None
-        except RuntimeError:
-            public_key = None
-        profiles.append({
-            'name': name,
-            'public_key': public_key,
-            'active': name in active,
-            'device': active.get(name, ''),
-        })
-    return profiles
+    return [interface.as_dict(include_key=True) for interface in discover()]
+
+
+def _interface(profile: dict) -> WireGuardInterface:
+    return WireGuardInterface(
+        name=profile['name'],
+        device=profile.get('device', ''),
+        active=bool(profile['active']),
+        public_key=profile.get('public_key'),
+    )
+
+
+def probe_profile_load(name: str) -> WireGuardInterface | None:
+    """Activate a candidate, measure its tunnel, then disconnect it."""
+    activated = False
+    try:
+        activate_profile(name)
+        activated = True
+        profile = next(
+            (item for item in list_wireguard_profiles()
+             if item['name'] == name and item['active']),
+            None,
+        )
+        if profile is None:
+            return None
+        return measure(_interface(profile))
+    finally:
+        if activated:
+            try:
+                disconnect_profile(name)
+            except RuntimeError:
+                pass
 
 
 def disconnect_profile(name: str) -> None:
@@ -306,7 +262,29 @@ def check_host_conflict(repair: bool = True) -> int:
         profile for profile in profiles
         if not profile['active'] and profile['public_key'] and profile['public_key'] != pod_key
     ]
-    for profile in sorted(candidates, key=lambda item: item['name'].lower()):
+    if not candidates:
+        print('SECURED: no active host WireGuard profile shares the Pod key; '
+              'no safe failover profile is available.')
+        return 0
+    ordered = sorted(candidates, key=lambda item: item['name'].lower())
+    if len(ordered) > 1:
+        probed = []
+        for profile in ordered:
+            print(f'LOAD: probing host WireGuard {profile["name"]}.')
+            try:
+                measured = probe_profile_load(profile['name'])
+            except RuntimeError as err:
+                print(f'LOAD: {err}; skipping this profile.')
+                continue
+            if measured is not None and measured.score is not None:
+                probed.append((measured.score, profile))
+        if probed:
+            probed.sort(key=lambda item: (item[0], item[1]['name'].lower()))
+            ordered = [profile for _, profile in probed]
+            print('LOAD: selected order: ' + ', '.join(
+                f'{profile["name"]} ({score:.1f})' for score, profile in probed
+            ))
+    for profile in ordered:
         print(f'FAILOVER: activating host WireGuard {profile["name"]}.')
         try:
             activate_profile(profile['name'])

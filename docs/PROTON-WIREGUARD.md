@@ -106,6 +106,26 @@ python3 scripts/proton-wireguard.py check-host --no-repair
 
 Only NetworkManager WireGuard profiles are inspected. A key reused via `wg-quick`, another manager, or another machine cannot be detected here. **Never assume successful preflight guarantees exclusive use of a key.**
 
+### Interface library and load probes
+
+The shared library is `scripts/wireguard_library.py`:
+
+```bash
+python3 scripts/wireguard_library.py list
+python3 scripts/wireguard_library.py list --json
+```
+
+It lists NetworkManager WireGuard profiles, their active device, and a local
+load score for active interfaces. When several safe failover candidates exist,
+`check-host` activates each candidate, probes it, disconnects it, and activates
+the lowest-score candidate. With only one candidate it activates it directly.
+
+The score is `average ICMP RTT + 10 × packet loss percent` through the tunnel to
+`1.1.1.1`. It is a **local path-health proxy**, not a Proton server-side load
+metric. A blocked ICMP probe produces an unknown score and the candidate falls
+back to name order. Probing activates and disconnects host VPN profiles, so keep
+out-of-band access.
+
 ## 4. Deploy and verify actual network egress
 
 ```bash
