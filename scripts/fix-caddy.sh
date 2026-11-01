@@ -67,6 +67,21 @@ if re.search(old_site, source):
     source=re.sub(old_site, 'http://:8081 {\n\tbind 127.0.0.1', source, count=1)
 elif not re.search(r'(?m)^http://:8081\s*\{[ \t]*\n[ \t]*bind 127\.0\.0\.1[ \t]*$', source):
     sys.exit('Unexpected Caddy listener; review HTTP scheme and loopback bind manually, no changes made')
+if not re.search(r'(?m)^\s*@shared\b', source):
+    match=re.search(r'(?m)^([ \t]*)reverse_proxy http://127\.0\.0\.1:6080\b', source)
+    if not match:
+        sys.exit('Caddyfile has no 127.0.0.1:6080 reverse_proxy; add the Shared User Space route manually')
+    indent=match.group(1)
+    route=(
+        f'{indent}@shared path /shared /shared/*\n'
+        f'{indent}handle @shared {{\n'
+        f'{indent}    request_body {{\n'
+        f'{indent}        max_size 100MB\n'
+        f'{indent}    }}\n'
+        f'{indent}    reverse_proxy http://127.0.0.1:8082\n'
+        f'{indent}}}\n'
+    )
+    source=source[:match.start()]+route+source[match.start():]
 Path(sys.argv[2]).write_text(source)
 PY
 

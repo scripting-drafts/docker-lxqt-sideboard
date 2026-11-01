@@ -24,6 +24,25 @@ if [[ ! "$vnc_password" =~ ^[[:alnum:]]{8}$ ]]; then
 fi
 
 install -d -m 0700 "$HOME/.vnc" "$XDG_RUNTIME_DIR"
+
+# Shared User Space: persistent under the desktop-home volume.
+SHARED_SPACE="$HOME/Shared User Space"
+if [[ -L "$SHARED_SPACE" || -L "$SHARED_SPACE/lists" ]]; then
+  echo 'Shared User Space must not be a symlink' >&2; exit 1
+fi
+install -d -m 0755 "$SHARED_SPACE" "$SHARED_SPACE/lists"
+if [[ ! -e "$SHARED_SPACE/README.txt" && ! -L "$SHARED_SPACE/README.txt" ]]; then
+  cat > "$SHARED_SPACE/README.txt" <<'EOF'
+Shared User Space
+
+Images: use the authenticated /shared/ web route.
+Allowed: .jpg .jpeg .png .webp; 25 MiB per file; 10 files per upload.
+Lists: open qterminal and run:
+  nano "$HOME/Shared User Space/lists.txt"
+This folder persists with the desktop home volume.
+EOF
+  chmod 0644 "$SHARED_SPACE/README.txt"
+fi
 # x11vnc legacy password authentication is intentionally the second layer;
 # Caddy Argon2id browser authentication is the outer access boundary.
 x11vnc -storepasswd "$vnc_password" "$HOME/.vnc/passwd" >/dev/null 2>&1
@@ -73,6 +92,11 @@ pids+=("$!")
 
 # VNC is localhost-only; Websockify is reachable only inside the VPN namespace.
 websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5900 &
+pids+=("$!")
+
+# Image-only upload endpoint for the Shared User Space. Caddy exposes it at
+# /shared/ behind the same browser authentication as the desktop.
+python3 -B /usr/local/bin/shared-space --root "$SHARED_SPACE" --port 8082 &
 pids+=("$!")
 
 # Terminate the group if any critical component exits.

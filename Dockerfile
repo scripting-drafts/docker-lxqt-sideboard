@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get -y dist-upgrade && \
     apt-get install -y --no-install-recommends \
       ca-certificates curl dbus-x11 dbus-user-session \
-      lxqt-core openbox pcmanfm-qt qterminal \
+      lxqt-core openbox pcmanfm-qt qterminal nano python3 \
       novnc websockify x11vnc xvfb xauth x11-utils xinput \
       procps iproute2 tini fontconfig fonts-dejavu-core \
       xdg-utils && \
@@ -44,12 +44,14 @@ RUN set -eux; \
 
 COPY --chmod=0755 start-desktop.sh /usr/local/bin/start-desktop
 COPY --chmod=0755 scripts/check-vnc.py /usr/local/bin/check-vnc
+COPY --chmod=0755 scripts/shared_space.py /usr/local/bin/shared-space
 
 USER desktop:desktop
 WORKDIR /home/desktop
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
   CMD curl --fail --silent --show-error --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && \
+      curl --fail --silent --show-error --max-time 2 http://127.0.0.1:8082/shared/ >/dev/null && \
       /usr/local/bin/check-vnc --timeout 2 || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start-desktop"]

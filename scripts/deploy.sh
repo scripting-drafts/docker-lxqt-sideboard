@@ -11,6 +11,10 @@ python3 -c 'import yaml' || { echo 'Install: sudo apt install python3-yaml' >&2;
 for f in config/settings.json config/Caddyfile config/secrets/wireguard_private_key config/secrets/tailscale_authkey config/secrets/vnc_password; do
   [[ -s "$f" ]] || { echo "Missing $f; first run python3 scripts/configure.py" >&2; exit 1; }
 done
+grep -qF '@shared path /shared' config/Caddyfile || {
+  echo 'Missing the Shared User Space route in config/Caddyfile; run ./scripts/fix-caddy.sh' >&2
+  exit 1
+}
 [[ -c /dev/net/tun ]] || { echo 'Missing /dev/net/tun on host. Load tun module / check host.' >&2; exit 1; }
 python3 scripts/proton-wireguard.py check-host
 docker info >/dev/null

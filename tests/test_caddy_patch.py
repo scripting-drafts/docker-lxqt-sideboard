@@ -66,6 +66,8 @@ if 'apply' in sys.argv: sys.stdin.read()
         patched = self.config.read_text()
         self.assertIn('http://:8081 {\n\tbind 127.0.0.1', patched)
         self.assertIn('protocols h1 h2', patched)
+        self.assertIn('@shared path /shared /shared/*', patched)
+        self.assertIn('reverse_proxy http://127.0.0.1:8082', patched)
         self.assertIn('$argon2id$synthetic-test-fixture-not-a-real-hash', patched)
         self.assertNotIn('kubectl', self.log.read_text())
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o600)
@@ -104,6 +106,7 @@ if 'apply' in sys.argv: sys.stdin.read()
     def test_future_configuration_uses_explicit_http_loopback(self):
         source = (ROOT / 'scripts/configure.py').read_text()
         self.assertIn('http://:8081 {\\n    bind 127.0.0.1', source)
+        self.assertIn('@shared path /shared /shared/*', source)
 
 
 if __name__ == '__main__':

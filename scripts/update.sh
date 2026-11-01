@@ -8,6 +8,8 @@ cd "$ROOT"
 [[ ! -e config/LOCKED_DOWN ]] || { echo 'Locked down'; exit 1; }
 exec 9>config/.maintenance.lock
 flock -x 9
+# Add the Shared User Space route to an existing Caddyfile before rebuilding.
+./scripts/fix-caddy.sh
 # Rebuild updated images; deploy.sh handles rolling restart (Recreate strategy).
 ./scripts/deploy.sh
 NS="$(python3 -c 'import json;print(json.load(open("config/settings.json"))["namespace"])')"

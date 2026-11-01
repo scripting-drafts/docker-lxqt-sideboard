@@ -4,6 +4,7 @@ generated/
 tests/
 scripts/*
 !scripts/check-vnc.py
+!scripts/shared_space.py
 *.zip
 *.tar.gz
 README.md

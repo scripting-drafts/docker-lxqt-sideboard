@@ -235,7 +235,7 @@ spec:
             command:
             - /bin/sh
             - -c
-            - curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && /usr/local/bin/check-vnc --timeout 2
+            - curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && curl -fsS --max-time 2 http://127.0.0.1:8082/shared/ >/dev/null && /usr/local/bin/check-vnc --timeout 2
           periodSeconds: 5
           failureThreshold: 60
           timeoutSeconds: 5
@@ -244,7 +244,7 @@ spec:
             command:
             - /bin/sh
             - -c
-            - curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && /usr/local/bin/check-vnc --timeout 2
+            - curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && curl -fsS --max-time 2 http://127.0.0.1:8082/shared/ >/dev/null && /usr/local/bin/check-vnc --timeout 2
           periodSeconds: 15
           timeoutSeconds: 5
         resources:

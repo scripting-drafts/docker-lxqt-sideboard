@@ -67,8 +67,8 @@ def main():
              'securityContext':dict(sec,runAsUser=1000,runAsGroup=1000),
              'env':env(DISPLAY=':99',RESOLUTION=s['resolution'],MULTIPTR='1' if s['multi_pointer'] else '0'),
              'volumeMounts':[volume_mount('desktop-home','/home/desktop'),volume_mount('vnc-secret','/run/secrets',True),volume_mount('tmp','/tmp'),volume_mount('run','/run'),volume_mount('shm','/dev/shm')],
-              'startupProbe':{'exec':{'command':['/bin/sh','-c','curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && /usr/local/bin/check-vnc --timeout 2']},'periodSeconds':5,'failureThreshold':60,'timeoutSeconds':5},
-              'readinessProbe':{'exec':{'command':['/bin/sh','-c','curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && /usr/local/bin/check-vnc --timeout 2']},'periodSeconds':15,'timeoutSeconds':5},
+              'startupProbe':{'exec':{'command':['/bin/sh','-c','curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && curl -fsS --max-time 2 http://127.0.0.1:8082/shared/ >/dev/null && /usr/local/bin/check-vnc --timeout 2']},'periodSeconds':5,'failureThreshold':60,'timeoutSeconds':5},
+              'readinessProbe':{'exec':{'command':['/bin/sh','-c','curl -fsS --max-time 2 http://127.0.0.1:6080/vnc.html >/dev/null && curl -fsS --max-time 2 http://127.0.0.1:8082/shared/ >/dev/null && /usr/local/bin/check-vnc --timeout 2']},'periodSeconds':15,'timeoutSeconds':5},
              'resources':{'requests':{'memory':'512Mi','cpu':'250m'},'limits':{'memory':'3Gi'}}}
     caddy={'name':'caddy','image':s['caddy_image'],'imagePullPolicy':'IfNotPresent',
            # The official caddy:2 executable has cap_net_bind_service=+ep. Dropping
