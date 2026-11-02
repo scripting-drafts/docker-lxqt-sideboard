@@ -44,7 +44,7 @@ for binary in docker kind kubectl; do
   fi
   row "$binary command" "${installed:-missing}" "$target" "$state"
 done
-if command -v docker >/dev/null && sudo -n docker --context default info >/dev/null 2>&1; then
+if command -v docker >/dev/null && docker --context default info >/dev/null 2>&1; then
   row 'Docker daemon' 'running' 'healthy' OK
 else
   row 'Docker daemon' 'unverified' 'healthy' CHECK_OR_REPAIR

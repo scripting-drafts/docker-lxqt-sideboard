@@ -11,7 +11,7 @@ class ReconcileTests(unittest.TestCase):
         for name in ('docker-ce','docker-compose-plugin','kind','kubectl','wireguard-tools',
                      'python3-yaml','/dev/net/tun','Project PyYAML'):
             self.assertIn(name, body)
-        for forbidden in ('apt-get install', 'apt-get upgrade', 'sudo systemctl restart', 'docker build', 'docker pull'):
+        for forbidden in ('apt-get install', 'apt-get upgrade', 'sudo systemctl restart', 'docker build', 'docker pull', 'sudo'):
             self.assertNotIn(forbidden, body)
         result = subprocess.run([str(script)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
