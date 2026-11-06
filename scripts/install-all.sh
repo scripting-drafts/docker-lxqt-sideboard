@@ -229,6 +229,14 @@ if (( ! SKIP_TIMERS )); then
     echo 'WARNING: User systemd timer installation failed; deployment remains running. Run scripts/install-systemd.sh after fixing the user session.' >&2
   fi
 fi
+if [[ $EUID -ne 0 ]]; then
+  step 'Install explicit-authorization guard'
+  if ! "$ROOT/scripts/install-guard.sh" --authorize-current; then
+    echo 'WARNING: guard installation failed; install it manually with scripts/install-guard.sh.' >&2
+  fi
+else
+  echo 'Run scripts/install-guard.sh as your normal user to install the authorization guard.' >&2
+fi
 step 'Completed — current deployment status'
 "$ROOT/scripts/status.sh"
 printf '\nUse ./scripts/lockdown.sh "reason" to disable access and scale down the Pod.\n'

@@ -1,0 +1,14 @@
+[Unit]
+Description=Block unauthorized LXQt shared-browser stack starts
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+ExecStart=%h/.local/bin/lxqt-stack guard
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

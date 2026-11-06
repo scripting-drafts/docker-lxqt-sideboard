@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# Explicit-authorization control and unauthorized-start guard for this stack.
+# The stack must not start unless this script creates the authorization marker
+# via `start` or `authorize`.  A user or system guard watches for direct Docker
+# starts and scales the deployment back to zero when no marker exists.
+set -u
+
+ROOT="${LXQT_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SETTINGS="$ROOT/config/settings.json"
+DEPLOY="lxqt-desktop"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/lxqt-stack"
+AUTH="$STATE_DIR/authorized"
+
+setting() {
+  python3 - "$SETTINGS" "$1" <<'PY' 2>/dev/null
+import json
+import sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(data.get(sys.argv[2], ""))
+except Exception:
+    pass
+PY
+}
+
+CLUSTER="${CLUSTER:-$(setting cluster)}"
+CLUSTER="${CLUSTER:-lxqt-secure}"
+NS="${NS:-$(setting namespace)}"
+NS="${NS:-lxqt-secure}"
+KIND="${CLUSTER}-control-plane"
+BUILDER_NAME="lxqt-cpu-${CLUSTER}"
+BUILDER="buildx_buildkit_${BUILDER_NAME}0"
+KUBECTL=(kubectl)
+[[ -s "$ROOT/config/kubeconfig" ]] && KUBECTL=(kubectl --kubeconfig "$ROOT/config/kubeconfig")
+
+log() { printf '%s %s\n' "$(date -Is)" "$*" >&2; }
+authorized() { [ -f "$AUTH" ]; }
+docker_ok() { docker info >/dev/null 2>&1; }
+running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
+api_ok() { timeout 2 "${KUBECTL[@]}" get --raw=/readyz >/dev/null 2>&1; }
+
+authorize() {
+  local reason="${1:-manual}"
+  mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR" || return 1
+  printf 'authorized_by=%s\nauthorized_at=%s\nreason=%s\n' \
+    "$(id -un)" "$(date -Is)" "$reason" > "$AUTH" || return 1
+  chmod 600 "$AUTH"
+  log "authorized LXQt shared-browser stack: $reason"
+}
+
+revoke() {
+  rm -f "$AUTH"
+  log "authorization revoked"
+}
+
+scale_down() {
+  if api_ok; then
+    timeout 15 "${KUBECTL[@]}" -n "$NS" scale deployment "$DEPLOY" --replicas=0 >/dev/null 2>&1 || true
+  fi
+}
+
+stop_stack() {
+  revoke
+  scale_down
+  docker update --restart=no "$KIND" "$BUILDER" >/dev/null 2>&1 || true
+  docker stop -t 60 "$KIND" >/dev/null 2>&1 || true
+  docker stop -t 30 "$BUILDER" >/dev/null 2>&1 || true
+  log "stack stop complete"
+}
+
+start_stack() {
+  local reason="${1:-manual}"
+  docker_ok || { log "Docker is not available"; return 1; }
+  authorize "$reason" || return 1
+  docker update --restart=on-failure "$KIND" >/dev/null 2>&1 || true
+  docker update --restart=unless-stopped "$BUILDER" >/dev/null 2>&1 || true
+  docker start "$KIND" "$BUILDER" >/dev/null 2>&1 || {
+    log "failed to start containers"; revoke; return 1;
+  }
+  for _ in $(seq 1 90); do
+    api_ok && break
+    sleep 2
+  done
+  if ! api_ok; then
+    log "authorization recorded, but the Kubernetes API is not ready"
+    return 1
+  fi
+  "${KUBECTL[@]}" -n "$NS" scale deployment "$DEPLOY" --replicas=1
+  "${KUBECTL[@]}" -n "$NS" rollout status deployment "$DEPLOY" --timeout=900s
+}
+
+guard() {
+  log "guard started; cluster=$CLUSTER namespace=$NS auth=$AUTH"
+  while :; do
+    if ! authorized; then
+      if running "$KIND" || running "$BUILDER"; then
+        log "unauthorized stack start detected; stopping"
+        stop_stack
+      fi
+      if api_ok; then
+        replicas="$(timeout 2 "${KUBECTL[@]}" -n "$NS" get deployment "$DEPLOY" \
+          -o jsonpath='{.spec.replicas}' 2>/dev/null || echo 0)"
+        if [ "${replicas:-0}" != "0" ]; then
+          log "unauthorized deployment replicas=$replicas; scaling to 0"
+          scale_down
+        fi
+      fi
+    fi
+    sleep 5
+  done
+}
+
+status() {
+  echo "authorization: $(authorized && echo present || echo absent)"
+  [ -f "$AUTH" ] && sed 's/^/  /' "$AUTH"
+  docker inspect -f '{{.Name}} running={{.State.Running}} restart={{.HostConfig.RestartPolicy.Name}} status={{.State.Status}}' \
+    "$KIND" "$BUILDER" 2>/dev/null || true
+  if api_ok; then
+    "${KUBECTL[@]}" -n "$NS" get deployment "$DEPLOY" -o wide 2>/dev/null || true
+    "${KUBECTL[@]}" -n "$NS" get pods -l app="$DEPLOY" -o wide 2>/dev/null || true
+  else
+    echo "kubernetes API: unavailable (Kind node stopped)"
+  fi
+}
+
+case "${1:-}" in
+  start)
+    if [ "${2:-}" != "--yes" ]; then
+      printf 'Type START to authorize the LXQt shared-browser stack: ' >&2
+      read -r answer || exit 1
+      [ "$answer" = "START" ] || { echo "not authorized" >&2; exit 1; }
+    fi
+    start_stack "${3:-manual}"
+    ;;
+  authorize)
+    authorize "${2:-manual}"
+    ;;
+  revoke)
+    revoke
+    ;;
+  stop)
+    stop_stack
+    ;;
+  status)
+    status
+    ;;
+  guard)
+    guard
+    ;;
+  *)
+    cat >&2 <<'EOF'
+Usage:
+  lxqt-stack start [--yes] [reason]   authorize and start the stack
+  lxqt-stack authorize [reason]       authorize without starting
+  lxqt-stack revoke                   remove authorization
+  lxqt-stack stop                     revoke and stop the stack
+  lxqt-stack status                   show authorization and runtime state
+  lxqt-stack guard                    run the unauthorized-start guard
+EOF
+    exit 2
+    ;;
+esac

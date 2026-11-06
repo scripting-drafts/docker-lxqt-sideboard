@@ -21,7 +21,8 @@ with tempfile.TemporaryDirectory(prefix='lxqt-tests-', dir=temporary_root) as di
                  '.gitignore', '.dockerignore'):
         shutil.copy2(root / name, target / name)
     for folder, patterns in (
-        ('scripts', ('*.sh', '*.py')),
+        ('scripts', ('*.sh', '*.py', 'lxqt-stack')),
+        ('systemd', ('*.service', '*.in')),
         ('tests', ('*.py',)),
         ('docs', ('*.md',)),
         ('examples', ('*.yaml',)),

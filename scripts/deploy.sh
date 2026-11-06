@@ -31,6 +31,9 @@ print(s['cluster']);print(s['namespace']);print(s['host_data_dir']);print(s['hos
 PY
 )
 CLUSTER="${opts[0]}"; NS="${opts[1]}"; DATA="${opts[2]}"; CPUS="${opts[3]}"; IMAGE="${opts[4]}"
+# A deploy is an explicit user authorization to run this stack.  The guard
+# must see the marker before Kind/BuildKit/Deployment start.
+"$ROOT/scripts/lxqt-stack" authorize "deploy.sh"
 mkdir -p "$DATA/home" "$DATA/tailscale"
 chmod 700 "$DATA" "$DATA/home"
 # The Tailscale process runs as UID 0 but drops ALL capabilities, including

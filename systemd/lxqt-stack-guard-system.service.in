@@ -1,0 +1,19 @@
+[Unit]
+Description=Block unauthorized LXQt shared-browser stack starts
+After=docker.service
+Requires=docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+Environment=LXQT_PROJECT_ROOT=@ROOT@
+ExecStart=@HOME@/.local/bin/lxqt-stack guard
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
