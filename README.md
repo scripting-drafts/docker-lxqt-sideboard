@@ -1,4 +1,4 @@
-# Docker Shared Browser source
+# LXQt shared-browser desktop source
 
 This copy excludes deployment configuration, credentials, state, logs, and backups.
 Review before sharing; automated scanning cannot prove absence of sensitive data.
